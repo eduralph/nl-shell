@@ -1,7 +1,9 @@
 """The read-eval loop.
 
-M0.1 scaffold: reads lines and handles the exit commands. Routing, the policy gate and
-the PTY session arrive in later M0 issues (see docs/design/architecture/05-building-block-view.md).
+Reads lines, handles the exit commands, and routes everything else as a shell command or
+natural language (``nl_shell.router``). Nothing runs yet: the policy gate, the PTY session
+and the model backend arrive in later M0 issues (see
+docs/design/architecture/05-building-block-view.md).
 """
 
 from __future__ import annotations
@@ -10,9 +12,22 @@ from collections.abc import Callable
 from typing import TextIO
 import sys
 
+from nl_shell.router import Route, route
+
 PROMPT = "nl> "
 EXIT_COMMANDS = frozenset({":quit", ":exit"})
-NOT_YET = "nl-shell can't run anything yet: the bash session arrives in M0.2."
+COMMAND_NOT_YET = (
+    "That looks like a shell command, but nl-shell can't run anything yet: "
+    "the bash session arrives in M0.2."
+)
+NATURAL_LANGUAGE_NOT_YET = (
+    "That looks like a natural-language request, but nl-shell can't answer it yet: "
+    "the model backend arrives in M0.8."
+)
+REPLIES = {
+    Route.COMMAND: COMMAND_NOT_YET,
+    Route.NATURAL_LANGUAGE: NATURAL_LANGUAGE_NOT_YET,
+}
 
 
 class Repl:
@@ -44,4 +59,4 @@ class Repl:
                 continue
             if text in EXIT_COMMANDS:
                 return 0
-            print(NOT_YET, file=self._out)
+            print(REPLIES[route(text)], file=self._out)
