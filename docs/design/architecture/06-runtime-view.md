@@ -36,10 +36,13 @@ the REPL shows the command and waits for the user's confirm or edit before runni
 ## 6.2 sudo
 
 1. The user confirms a privileged command (the gate always asks).
-2. bash runs it; sudo-rs writes its prompt to the PTY.
-3. The REPL detects the prompt and switches to **passthrough**: keystrokes go straight to
-   the PTY, state capture and logging stop.
-4. When sudo finishes, the REPL strips the prompt line from captured output and resumes.
+2. bash runs it; sudo-rs writes the session's own prompt (`SUDO_PROMPT`, random per
+   session) to the PTY.
+3. Because the running command is privileged *and* the prompt matches, the REPL enters
+   **passthrough**: capture stops. Keystrokes were already going to the PTY unlogged, as
+   for every running command.
+4. The prompt line, with its pwfeedback asterisks, is removed from captured output. The
+   command's done record on the control channel ends passthrough (ADR-0014, ADR-0015).
 
 sudo-rs caches credentials per tty, so later sudo commands in the session usually do not
 prompt.

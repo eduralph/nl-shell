@@ -57,9 +57,12 @@ tags:
 
 | Term | Meaning |
 |---|---|
+| **Clean-room re-derivation** | For a privileged proposal made with untrusted text in the prompt: discard it and ask the model again with trusted and local-reference items only (ADR-0016) |
 | **Command model** | The model that turns a request plus the state block into a proposed command. The student, once M4 lands |
+| **Control channel** | The pipe on fd 3 the PTY session writes start/done records and snapshots to; printed text can't reach it (ADR-0014) |
 | **Confirm** | The user's explicit yes (or edit) before a non-read-only command runs |
 | **Correction pair** | Training pair mapping an outdated habit to the 26.04 way |
+| **Degraded mode** | The session state nl-shell enters when the control channel misbehaves or its hooks were changed: everything needs a confirm until restart |
 | **Execution filter** | Keeping a training pair only if its command ran correctly in a fresh 26.04 snapshot |
 | **GGUF** | llama.cpp's model file format; one format for every GPU vendor |
 | **Grounded generation** | The teacher writes training pairs from a tool's real man page, not from memory |
@@ -71,7 +74,8 @@ tags:
 | **QLoRA** | Memory-efficient fine-tuning that trains small adapter weights on a quantized model |
 | **Quarantined reader** | Separate model call that reads untrusted text and may only answer in a fixed schema |
 | **Reference VM** | The Ubuntu 26.04 VM used as source of truth and execution sandbox at build time |
-| **Risk class** | read-only, mutating, destructive or privileged |
+| **Risk class** | read-only, mutating, session-altering, destructive or privileged |
+| **Session snapshot** | Aliases, functions, traps, `PATH` and hook hashes reported after every command; the gate resolves command words against it |
 | **State block** | What the command model knows about the session: cwd, last command, exit code, output tail, ls, filtered env |
 | **Student** | The small model that ships, fine-tuned from teacher-generated data |
 | **Taint** | Label on each context item saying who could have written it: trusted, local-reference or untrusted |
