@@ -1,4 +1,4 @@
-# Contributing to {{PROJECT_NAME}}
+# Contributing to nl-shell
 
 Thanks for contributing. This project is licensed under the
 [Apache License, Version 2.0](LICENSE); contributions are accepted under the same
@@ -28,4 +28,4 @@ This appends a `Signed-off-by: Your Name <you@example.com>` trailer (using your
 - Keep the test suite green: _TODO — name the single command once the suite exists._
 
 The cycle that drives changes here is run from the companion PDCA instance repo,
-[{{PROJECT_NAME}}-pdca](https://github.com/{{OWNER}}/{{PROJECT_NAME}}-pdca).
+[nl-shell-pdca](https://github.com/eduralph/nl-shell-pdca).

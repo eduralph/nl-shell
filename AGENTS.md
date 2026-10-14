@@ -1,4 +1,4 @@
-# Agent context — {{PROJECT_NAME}}
+# Agent context — nl-shell
 
 Rules for any coding agent (Claude, Codex, or other) working **on this repository**.
 [CONTRIBUTING.md](CONTRIBUTING.md) governs humans and agents alike; this file adds the
