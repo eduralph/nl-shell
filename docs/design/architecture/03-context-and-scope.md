@@ -42,7 +42,7 @@ graph LR
 | sudo prompt via the PTY | in | Passthrough only; nothing captured (ADR-0006) |
 | Local reference docs | in | Local-reference taint |
 | `~/.bash_history` | both | Read as trusted (it is the user's own); appended after each run |
-| llama.cpp server or bindings | both | Local, no network for the command model |
+| `llama-server` user service on a Unix socket (`$XDG_RUNTIME_DIR/nl-shell/model.sock`, `0600`) | both | Local only, no TCP port; schema-constrained answers (ADR-0018) |
 | Teacher endpoint (dev only) | both | Model output from another host; not in the shipped config |
 
 ## 3.3 Out of context

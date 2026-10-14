@@ -16,7 +16,7 @@ tags:
 | Constraint | Source |
 |---|---|
 | Target OS is Ubuntu 26.04 LTS: sudo-rs as `sudo`, uutils core utilities (cp, mv, rm stay GNU), Wayland-only GNOME 50, systemd-only, kernel 7.0 | Plan; section 8.8 |
-| Target hardware: one 16 GB NVIDIA or AMD Radeon card; total VRAM use ≤ 6 GB so the desktop keeps working; CPU-only must function | Plan; ADR-0008 |
+| Target hardware: one 16 GB NVIDIA or AMD Radeon card; total VRAM use ≤ 6 GB so the desktop keeps working; CPU-only must function | Plan (this section is the normative home of the budget; ADR-0019) |
 | Bash is the executor | ADR-0002 |
 | No network needed at runtime | ADR-0003 |
 | One model runtime for every GPU vendor: llama.cpp with GGUF | ADR-0008 |
