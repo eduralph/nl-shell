@@ -1,0 +1,17 @@
+---
+created: 14.10.2026 19:22
+type: index
+tags:
+  - proposal
+---
+# Enhancement proposals
+
+KEP/RFC-style proposals for larger changes and milestone plans. Start one by copying
+`../templates/proposal.md` into `draft/`. Accepted proposals move to `accepted/` and are never
+edited; a later supersession is recorded **here**, not on the frozen file.
+
+## Index
+
+| # | Title | Status |
+|---|-------|--------|
+| [0001](draft/0001-implementation-arc.md) | The implementation arc — the order nl-shell is built in | draft (acceptance: [#6](https://github.com/eduralph/nl-shell/issues/6)) |

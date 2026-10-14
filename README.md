@@ -21,8 +21,8 @@ The full design, phases and open questions are in [docs/plan.md](docs/plan.md).
 
 ## Status
 
-Early. See the [open milestone](https://github.com/eduralph/nl-shell/milestones) for
-what is in work.
+Pre-code. See the [milestones](https://github.com/eduralph/nl-shell/milestones) for the plan
+and what is in work.
 
 ## Development process
 
@@ -37,18 +37,23 @@ closes it. See [CONTRIBUTING.md](CONTRIBUTING.md) and, for coding agents, [AGENT
 
 ## Releases
 
-Versions are git tags of the form `vX.Y.0` — a minor bump per release (patch stays `0`);
-each tag is annotated with its release notes (`git show vX.Y.0`). The queue for the next
-release is a single open **GitHub milestone**:
+Work is planned in **named milestones** — `Foundations`, then `M0` to `M5` — that follow
+[proposal 0001, the implementation arc](docs/design/proposals/draft/0001-implementation-arc.md).
+Each milestone has a tracker issue listing its work items, and its description says what it
+proves and when it is done.
 
-- There is always **one open milestone — the next version to ship** (the highest released
-  tag's minor `+ 1`). It is the live "in work" list.
-- **New issues are filed against that open milestone.** An issue with no milestone carries
-  the `new` label (set by the Issue triage workflow) until it is triaged.
-- **When that version is released** — cut as a `vX.Y.0` tag — its milestone is **closed and a
-  new milestone one minor higher is opened**. New issues then go there. Repeat.
+- **New issues are filed against the milestone they belong to.** An issue with no milestone
+  carries the `new` label (set by the Issue triage workflow) until it is triaged; backlog
+  items stay there until a proposal places them.
+- **Releases are git tags `vX.Y.0`** cut at a ★ release point, each annotated with its release
+  notes. The first is `v0.1.0` at the end of M5.
 
 Each change ships as its own pull request with a linked issue (one logical change per PR).
+
+## Design documentation
+
+[`docs/design/`](docs/design/README.md) holds the architecture overview, the decision records
+(ADRs), proposals and specs. Start with its reading order.
 
 ## License
 
