@@ -44,3 +44,4 @@ is Accepted. M0.1 (#9) was scaffolding.
 | [0019](0019-gpu-backend-order.md) | GPU backend order: CUDA on NVIDIA, Vulkan by default on AMD, ROCm opt-in | Proposed |
 | [0020](0020-configuration-and-file-locations.md) | Configuration and file locations | Proposed |
 | [0021](0021-python-prompt-toolkit-ptyprocess.md) | Python, prompt_toolkit and ptyprocess for the REPL (packaging left to #50) | Proposed |
+| [0022](0022-english-input-first-replies-follow-locale.md) | English input first; replies follow the system locale | Proposed |
