@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+/build/
+/dist/
+
+# Personal Claude Code permissions overlay; the shared settings.json is tracked.
+.claude/settings.local.json*
+
+# Local tool/editor state.
+.claude/worktrees/
+.obsidian/
