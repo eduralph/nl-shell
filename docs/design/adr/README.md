@@ -45,3 +45,4 @@ is Accepted. M0.1 (#9) was scaffolding.
 | [0020](0020-configuration-and-file-locations.md) | Configuration and file locations | Proposed |
 | [0021](0021-python-prompt-toolkit-ptyprocess.md) | Python, prompt_toolkit and ptyprocess for the REPL (packaging left to #50) | Proposed |
 | [0022](0022-english-input-first-replies-follow-locale.md) | English input first; replies follow the system locale | Proposed |
+| [0023](0023-os-targets.md) | OS targets: one folder per OS, models referenced by manifest | Proposed |
