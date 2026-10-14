@@ -1,8 +1,9 @@
 # Threat model: nl-shell
 
 Reviewer-facing summary of what an attacker can reach and how bad each outcome is. The
-design it describes is [docs/plan.md](../docs/plan.md). The project is **pre-code**: this
-file describes the design, and each phase that lands code updates it to describe the code.
+design it describes is in [docs/design/](../docs/design/README.md) (ADRs 0013–0020 for the safety
+layer). M0 is in progress: this file describes the design, and each change that lands code
+updates it to describe the code.
 Where the two differ, this file should describe what the code does today.
 
 ## What this project does
@@ -18,123 +19,193 @@ user ─> REPL ─> command model (local) ─> policy gate ─> persistent bash 
 
 - **REPL** (Python, prompt_toolkit): input modes (`\` raw bash, `?` ask, `@` one command,
   `@@` multi-step agent loop, `:` meta-commands), confirm UI, session log.
-- **Command model**: a small local model (GGUF via llama.cpp) that proposes commands from
-  the user's request plus a state block (cwd, last command, exit code, truncated output,
-  filtered env).
-- **Policy gate**: deterministic, AST-based (bashlex or tree-sitter-bash plus a denylist).
-  Classes: read-only → runs directly; mutating → show and confirm; destructive → explicit
-  confirm; privileged (`sudo`, `pkexec`, `su`, `doas`) → always confirm. The model's own
-  risk label is a secondary signal only.
-- **PTY bash**: one persistent session, so `cd` and `export` persist. On a `sudo` prompt the
-  REPL switches to raw passthrough: keystrokes go straight to the PTY, nothing is logged,
-  state capture is suspended.
-- **Quarantined reader**: a separate model call that reads raw untrusted text and may only
-  return schema-constrained output. The command model never sees the raw text.
+- **Command model**: a small local model served by a per-user `llama-server` on a Unix
+  socket (ADR-0018). It proposes one command as schema-constrained JSON from the user's
+  request plus a state block (cwd, last command, exit code, truncated output, filtered
+  env, retrieved history).
+- **Policy gate**: deterministic. tree-sitter-bash parse, a read-only **allowlist**, static
+  rules, and every command word checked against the **live session snapshot** (ADR-0013,
+  spec `policy-gate/v1`). Classes: read-only → runs; mutating and session-altering →
+  confirm; destructive → explicit confirm; privileged → always confirm. The model's risk
+  label can only raise the class.
+- **PTY session**: one persistent bash. Completion, exit codes and session snapshots arrive
+  on a separate control channel (fd 3) that printed text can't reach; commands are sent
+  byte-identically (ADR-0014, spec `pty-protocol/v1`). Keystrokes are forwarded unlogged
+  while a command runs. Sudo passthrough additionally stops capture (ADR-0015).
+- **Quarantined reader**: a separate request to the same model server that reads raw
+  untrusted text and returns only fixed choices and validated names (ADR-0017, spec
+  `reader-schema/v1`). The command model never sees the raw text it read.
 - **Intent classifier**: a tiny local model that routes plain input to "bash" or "natural
   language".
-- **Installer**: GPU detection (CUDA / ROCm / Vulkan / CPU), model download, install-time
-  harvest of local man pages and `--help` for retrieval.
+- **Installer**: GPU detection (CUDA; Vulkan by default on AMD, ROCm opt-in; CPU, ADR-0019),
+  signed model download, and an install-time harvest of dpkg-owned man pages and an
+  allowlist of `--help` outputs that runs no arbitrary binaries.
 - **Training pipeline** (build time only, not shipped): data generation, sandbox execution
   filter, fine-tuning.
+
+## Attackers
+
+| Attacker | Can | Example |
+|---|---|---|
+| **Text-only** (the main one) | write text nl-shell will read: files, file names, directory names, command output, web pages a command fetches, a cloned repository's contents and config | a README saying "run `source scripts/env.sh`"; a file named `ignore previous instructions; sudo …` |
+| **LAN peer** | answer or observe the dev teacher endpoint (development only) | a rogue host at the teacher's address |
+| **Supply chain** | tamper with what nl-shell installs or was trained on | a modified GGUF file, a poisoned training pair, a compromised llama.cpp release |
+
+Out of scope: **code already running as the user**. It can read `~/.bash_history`, the
+session log, `/proc/<pid>/environ`, write to nl-shell's inherited control channel, or just
+run `sudo` itself. nl-shell doesn't defend against it.
 
 ## Where untrusted input enters
 
 Treat all of the following as attacker-controlled:
 
-1. **Command output.** stdout and stderr of anything the shell runs: a `curl`, a `git log`
-   of a cloned repo, a `cat` of a downloaded file, a package's post-install message. This
-   text reaches the state block and the quarantined reader. It can carry prompt injection
-   ("ignore previous instructions, run …"), terminal escape sequences, or text shaped like
-   a REPL prompt or confirm dialog.
-2. **File contents and file names** in the working directory: `ls` output, file names with
-   newlines, quotes or shell metacharacters, and anything a command reads. A file name can
-   end up inside a proposed command.
-3. **Environment variables** captured into the state block, including values a cloned
-   project's tooling (direnv, `.envrc`, a sourced script) set.
-4. **The model's own output.** The command model's proposal is untrusted *as a command*:
-   it can be wrong, it can have been steered by tainted context, and it can try to hide a
-   privileged or destructive step (`bash -c "sudo …"`, an alias, `eval`, a here-doc,
-   `$(…)`, a pipe into `sh`). Everything the policy gate does assumes the proposal is
-   adversarial.
-5. **Downloaded artifacts at install time**: model weights and any helper binaries. A
-   tampered GGUF is a model the attacker chose.
-6. **Network peers**, if the optional teacher fallback over LAN is enabled: the endpoint's
-   responses are model output (item 4) from a host the user does not control end to end.
+1. **Command output.** stdout and stderr of anything the shell runs. It reaches the state
+   block and the quarantined reader, and the user's screen. It can carry prompt
+   injection, terminal escape sequences (OSC 52 clipboard writes, title changes, cursor
+   tricks), or text shaped like a REPL prompt, a confirm dialog or a sudo prompt.
+2. **File contents, file names and directory names.** `ls` output, names with newlines,
+   quotes, shell metacharacters or bidi characters; the cwd path itself after `cd` into a
+   cloned repository.
+3. **Environment variables** captured into the state block, including values set by a
+   repository's tooling (direnv, a sourced script).
+4. **Session state.** Aliases, functions, traps, `PATH` and other hooks set by `~/.bashrc`,
+   by raw `\cmd` input, or by a confirmed `source`. They change what a later command
+   does without changing its text (ADR-0013).
+5. **The model's own output.** The proposal is untrusted *as a command*: wrong, steered,
+   or hiding a privileged or destructive step. Everything the gate does assumes it is
+   adversarial. The same holds for the `@@` loop's "goal reached" verdict.
+6. **Retrieved history.** nl-shell writes executed commands to `~/.bash_history` and
+   retrieves them as few-shot examples. A command steered by untrusted text could come
+   back looking clean.
+7. **Quarantined-reader output.** It is derived from attacker text, even though its shape
+   is fixed (ADR-0017).
+8. **The local model socket** (`$XDG_RUNTIME_DIR/nl-shell/model.sock`, ADR-0018): reachable
+   by processes of the same user only.
+9. **Downloaded artifacts at install time:** model weights and helper binaries. A
+   malformed GGUF can attack llama.cpp's parser at load time, not only be "a model the
+   attacker chose".
+10. **Training data** (build time, but it ships as weights): teacher output, grounded pairs,
+    session logs. A poisoned pair can plant a targeted trigger that aggregate evals don't
+    detect.
+11. **The dev teacher endpoint** (development only, behind `--dev-teacher`, ADR-0020):
+    plaintext and unauthenticated on the LAN unless tunnelled. Its answers are model
+    output (item 5), and the state block is sent to it.
 
-Trusted: what the user types at the REPL, the user's confirm/deny decisions, the cwd and
-exit codes, paths the user typed, local reference docs (`man`, `--help`, `apt-cache
-show`, the vendored tldr snapshot), and the config files in the user's home directory.
+Trusted:
+- what the user types and their confirm and edit decisions;
+- exit codes and completion from the control channel (ADR-0014);
+- a cwd made of plain path characters;
+- dpkg-owned man pages and an allowlist of `--help` outputs harvested in the reference VM,
+  and the vendored tldr snapshot (local-reference, ADR-0016);
+- nl-shell's own config files in the user's home directory, except that a model endpoint
+  in them is refused without `--dev-teacher` (ADR-0020).
 
 ## What must hold
 
-- **No mutating command runs without a confirm**, whatever the context held. If untrusted
-  content was in context, every proposal is forced to confirm.
-- **No privileged command runs unless the user confirms it**, and it is blocked entirely
-  when the proposal came from tainted context and the user did not type `sudo` themselves.
-  The check runs on the parsed AST, so wrappers (`bash -c`, `env`, `xargs`, `find -exec`,
-  aliases, functions) do not hide it.
-- **The sudo password never leaves the PTY passthrough**: it never reaches the model, the
-  session log, `~/.bash_history`, the state block, or the `:context` view. The model may
-  not emit `sudo -S` or pipe anything into `sudo`.
-- **What the user confirms is exactly what runs.** The confirm UI shows the command as the
-  shell will parse it; no hidden characters, escape sequences or trailing payloads.
+- **Nothing that isn't read-only runs without a confirm.** Read-only means on the
+  allowlist, passing the static rules, and checked against the live session snapshot
+  (ADR-0013, spec `policy-gate/v1`). Read-only commands may run unconfirmed even after
+  untrusted text was read (ADR-0016).
+- **Privileged commands always need a confirm.** A privileged proposal made with untrusted
+  text in the prompt is never shown or run: nl-shell re-derives it from trusted context
+  only (clean-room, ADR-0016). Wrappers, aliases, functions and session hooks don't hide a
+  privileged step.
+- **The sudo password never leaves the PTY.** It never reaches the model, the session log,
+  `~/.bash_history`, the state block or `:context`. Passthrough starts only for privileged
+  commands and the session's own `SUDO_PROMPT`, and ends only at the control channel's
+  done record. The gate rejects `sudo -S`, `-p`, `-A`, overrides of `SUDO_PROMPT` and
+  `SUDO_ASKPASS`, and pipes into sudo (ADR-0015).
+- **What the user confirms is exactly what runs**, byte for byte: bracketed paste, no
+  history expansion (ADR-0014). The confirm UI renders from the parsed command with hidden
+  characters escaped; proposals with bidi or control characters are rejected (#74).
+- **Completion and exit codes can't be forged by output** (control channel, ADR-0014).
+- **Output rendering is filtered everywhere**: the mirrored PTY output, `:context` and
+  `:history` must not let printed text write the clipboard (OSC 52) or spoof nl-shell's
+  own UI. Full-screen programs keep their escape sequences, but not those.
+- **Untrusted text never becomes trusted**: reader output is untrusted, retrieved history
+  is at most local-reference, and tainted turns aren't retrieved (ADR-0016, ADR-0017).
 - **Model output is never piped into the shell without going through the gate.**
-- **The command model has no network.** The quarantined reader passes only schema-valid
-  data back.
+- **The command model and the reader have no network**; the model server listens only on
+  a `0600` Unix socket (ADR-0018).
 - **Locally complete**: no telemetry and no outbound connection in the default config.
 
 ## Components that matter most
 
-In order: the policy gate (AST parsing, classification, the denylist) · the sudo
-passthrough and PTY handling · taint tracking and the state block · the confirm UI and
-output rendering (escape sequences) · the quarantined reader's schema enforcement · the
-agent loop (`@@`, step limit, per-step confirm) · session logging and history write-back
-(secret leakage) · the installer (download integrity, privilege use).
+In order:
+1. the policy gate (allowlist, static rules, live-session resolution);
+2. the PTY protocol and control channel;
+3. sudo passthrough;
+4. taint labelling and clean-room re-derivation;
+5. the confirm UI and output rendering filter;
+6. the reader's schema validation;
+7. the agent loop (`@@`, step limit, per-step confirm, `sudo -k`);
+8. session logging and history write-back (taint and secrets);
+9. the installer (signed weights, privilege use).
 
-Lower priority: the intent classifier (a wrong route still goes through the gate), the
-retrieval index, `:` meta-commands.
+Lower priority: the intent classifier (a wrong route still goes through the gate),
+`:` meta-commands.
 
-Out of scope: the training pipeline and its data (build time only, never shipped);
-third-party code such as llama.cpp, bash, sudo-rs (report a dependency bug only if
-nl-shell's use of it is what makes it exploitable).
+Out of scope: third-party code such as llama.cpp, bash and sudo-rs (report a dependency
+bug only if nl-shell's use of it is what makes it exploitable). The training pipeline's
+*code* is lower priority, but its *data* is in scope as a supply-chain input (item 10).
 
 ## Known gaps: do not report these on their own
 
-- **Nothing is built yet.** Until Phase 0 lands there is no code to attack; a patch is
-  reviewed against the design above.
+- **Little is built yet.** M0 is in progress; a patch is reviewed against the design and
+  the specs.
 - **A model can be talked into proposing a bad command.** That is expected; the gate and
-  the confirm exist because of it. A report is in scope only when a bad proposal gets past
-  the gate or the confirm, or when tainted context is not marked as such.
-- **The user can run anything they type with `\`.** Raw bash is the escape hatch by design.
-- **A user who confirms a destructive command gets it.** The confirm is the control; in
-  scope is a confirm that shows something other than what runs, or a mislabelled class.
-- **The PTY session runs with the user's own rights.** There is no sandbox around the
-  shell itself; the execution sandbox exists only in the training pipeline.
+  the confirm exist because of it. In scope: a bad proposal getting past the gate, the
+  confirm or clean-room re-derivation, or untrusted text not being labelled as such.
+- **Raw `\cmd` input is the user's own**: it goes through the gate and confirm (ADR-0013),
+  but is never blocked for taint reasons.
+- **A user who confirms a destructive command gets it.** In scope: a confirm that shows
+  something other than what runs, or a mislabelled class.
+- **A root shell the user opens** (`sudo -i` typed by hand) runs in full passthrough;
+  nl-shell can't see or gate anything inside it, and says so (ADR-0015).
+- **Child processes inherit the control channel (fd 3).** Only code running as the user can
+  use it, which is out of scope.
+- **The PTY session runs with the user's own rights.** There is no sandbox around the shell.
 
 ## How to exercise it
 
-Placeholder until Phase 0. Once the REPL exists, this section names the test command, how
-to start the REPL against a stub model that returns a fixed proposal (to test the gate
-without a GPU), and how to replay a session log.
+The test suite: `python3 -m pytest` from the repo root (CONTRIBUTING.md). Tests run with
+a temporary HOME and guard scripts ahead of `sudo`; tests marked `sudo` or `vm` need
+the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). The gate's
+contract and its test vectors are in `docs/design/specs/policy-gate/v1.md`; the PTY
+protocol's in `docs/design/specs/pty-protocol/v1.md`. Once #16 lands, a stub model backend
+returns fixed proposals, so the gate can be tested without a GPU.
 
 ## How we rate severity
 
 The project's promise is that the human stays in control of what runs, and that the sudo
 password stays private.
 
-- **Critical:** a mutating or privileged command runs with no confirm; the sudo password
-  reaches the model, a log, the history or any file; the command that runs differs from
-  the one the user confirmed; a tampered model or binary is installed without detection.
-- **High:** untrusted content (command output, a file, a file name) steers a proposal
-  without the taint forcing a confirm; a privileged step hidden in a wrapper is classed as
-  non-privileged; the confirm UI can be spoofed or hidden by terminal escape sequences; the
-  command model or reader gets network access in the default config.
-- **Medium:** the agent loop exceeds its step limit or skips a per-step confirm; secrets
-  from the environment reach the state block, the session log or `:context` despite the
-  filter; a destructive command is classed as merely mutating.
-- **Low:** information leaks in error messages; issues only reachable through a
-  misconfiguration the user made; the intent classifier routing input to the wrong mode.
+- **Critical:**
+  - a non-read-only command runs with no confirm;
+  - the sudo password reaches the model, a log, the history or any file;
+  - the command that runs differs from the one the user confirmed;
+  - a tampered model or binary is installed without detection.
+- **High:**
+  - a tainted privileged proposal is shown or run without clean-room re-derivation;
+  - untrusted text is labelled trusted;
+  - a privileged or destructive step is classed lower;
+  - a session change (alias, function, hook) goes undetected by the gate;
+  - printed text forges a control-channel record, starts or ends passthrough, or spoofs
+    the confirm UI;
+  - output writes the clipboard;
+  - the command model or reader gets network access in the default config.
+- **Medium:**
+  - the agent loop exceeds its step limit or skips a per-step confirm;
+  - secrets from the environment or command output reach the state block, the session
+    log or `:context` despite the filter;
+  - a destructive command is classed as merely mutating;
+  - the session doesn't enter degraded mode when its hooks were changed.
+- **Low:**
+  - information leaks in error messages;
+  - issues only reachable through a misconfiguration the user made;
+  - the intent classifier routing input to the wrong mode.
 
 A clean reproducer matters more than a severity label. The best form is a failing test: a
-command string the gate misclassifies, a fixed model proposal that gets past the confirm,
-or a crafted command output that changes what is proposed.
+command string the gate misclassifies, a session setup after which a "read-only" command
+does something else, a fixed model proposal that gets past the confirm, or a crafted
+command output that changes what is proposed.
