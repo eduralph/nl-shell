@@ -14,12 +14,13 @@ Normative, versioned contracts (see `../README.md`).
 | [PTY session protocol](pty-protocol/v1.md) | v1 | draft | ADR-0014 |
 | [Command proposal](proposal/v1.md) | v1 | draft | ADR-0018 |
 | [Quarantined reader output](reader-schema/v1.md) | v1 | draft | ADR-0017, ADR-0018 |
+| [Session log](session-log/v1.md) | v1 | draft | ADR-0014, ADR-0016, ADR-0020 |
 
-Further candidates, from [`docs/plan.md`](../../plan.md) §Data Formats:
+Further candidates:
 
-- **Session log** (`session-log/v1.md`): one JSONL record per REPL turn. Written by the
-  REPL (M0), read by the data pipeline (M2).
 - **Training pair** (`training-pair/v1.md`): written by the data pipeline (M2), read by
-  training (M3) and the eval suite (M4).
+  training (M3). Its first draft is in the frozen [`docs/plan.md`](../../plan.md) §Data Formats.
+- **Eval** (`eval.md`): metric definitions and the eval runner's contract (#81).
+- **Prompts** (`prompts/v1.md`): the editable prompts YAML and what `:context` shows (#16).
 
 Write each as a spec, from `../templates/spec.md`, before a second consumer depends on it.

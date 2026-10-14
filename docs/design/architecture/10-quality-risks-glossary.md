@@ -28,7 +28,11 @@ tags:
 | Q7 | A request typed with an old habit (`ifconfig`, `apt-key`) | Proposal uses the 26.04 way | 4 |
 | Q8 | Fresh install on a supported machine | Correct backend chosen; works without training | 5 |
 
-### Evaluation targets (from `docs/plan.md`)
+### Evaluation targets
+
+This table is the canonical copy (`docs/plan.md` is frozen). The metric definitions,
+sample sizes and latency protocol are being specified in #81 (`specs/eval.md`); once that
+lands, it is canonical and this table points to it.
 
 | Metric | Target (initial) |
 |---|---|
@@ -50,7 +54,7 @@ tags:
 | Password leak through the PTY | Passthrough must start before the first keystroke | Tested prompt detection; re-verify on sudo-rs updates |
 | Model and data licenses | Teacher output may not be usable for a distributed model; base-model licenses differ by size | Checked before M2 data generation and M3 training (release-gating issues) |
 | Small-model quality | A 1.5–3B model may miss the eval targets | Grounded, execution-filtered data; local reference retrieval; dev-only teacher fallback |
-| AMD support | ROCm coverage of consumer cards varies | Vulkan fallback; test matrix includes AMD |
+| AMD support | ROCm coverage of consumer cards varies; ROCm doesn't list 26.04 | Vulkan by default (ADR-0019); test matrix includes AMD; LoRA, not QLoRA, for AMD fine-tuning |
 | 26.04 point releases | Tools and defaults drift | Retrain loop (M4.3) |
 
 ## 12. Glossary
@@ -71,12 +75,12 @@ tags:
 | **Passthrough** | REPL mode where keystrokes go straight to the PTY and nothing is captured; used for sudo |
 | **Policy gate** | Deterministic AST-based classifier that decides whether a command runs directly or needs a confirm |
 | **PTY** | Pseudo-terminal; lets nl-shell run one persistent bash that behaves like a real terminal |
-| **QLoRA** | Memory-efficient fine-tuning that trains small adapter weights on a quantized model |
+| **QLoRA** | Memory-efficient fine-tuning that trains small adapter weights on a quantized model. Used on NVIDIA; on AMD, Unsloth supports LoRA officially but QLoRA (bitsandbytes on ROCm) isn't demonstrated |
 | **Quarantined reader** | Separate model call that reads untrusted text and may only answer in a fixed schema |
 | **Reference VM** | The Ubuntu 26.04 VM used as source of truth and execution sandbox at build time |
 | **Risk class** | read-only, mutating, session-altering, destructive or privileged |
 | **Session snapshot** | Aliases, functions, traps, `PATH` and hook hashes reported after every command; the gate resolves command words against it |
-| **State block** | What the command model knows about the session: cwd, last command, exit code, output tail, ls, filtered env |
+| **State block** | What the command model knows about the session: cwd, last command, exit code, output tail, ls, filtered env, retrieved history examples — each item with its taint label |
 | **Student** | The small model that ships, fine-tuned from teacher-generated data |
 | **Taint** | Label on each context item saying who could have written it: trusted, local-reference or untrusted |
 | **Teacher** | The large model on the developer's hardware that generates training data |

@@ -114,12 +114,19 @@ page) and **execution-filtered** (kept only if it ran correctly in a fresh 26.04
 
 What the student must know, and what it must unlearn:
 
-- sudo-rs is `sudo`: no plugin system, `pwfeedback` on by default.
-- uutils (Rust coreutils) provide the core utilities; `cp`, `mv`, `rm` remain GNU.
-- Wayland-only GNOME 50: `wl-copy`/`wl-paste`, no `xclip`/`xdotool`.
-- Kernel 7.0; last release with System V init compatibility → prefer systemd units.
-- Unlearn: `apt-key`, `ifconfig`/`netstat`, sudo plugin options, X11 tooling.
-- ROCm via `apt install rocm`.
+- sudo-rs is `sudo` (0.2.13 on 26.04, checked): no plugin system, `pwfeedback` on by
+  default ([Phoronix](https://www.phoronix.com/news/sudo-rs-password-feedback)); supports
+  `-p`, `-A`, `-S`, `SUDO_PROMPT` and `SUDO_ASKPASS`.
+- uutils (Rust coreutils) provide the core utilities; `cp`, `mv`, `rm` remain GNU in 26.04
+  and are planned to move to uutils in 26.10 ([LWN](https://lwn.net/Articles/1069481/)).
+  The retrain loop (#44) has to cover that change.
+- GNOME 50 is Wayland-only: prefer `wl-copy`/`wl-paste`. `xdotool` can't drive Wayland
+  windows; `xclip` often still works through XWayland but isn't the 26.04 way.
+- Kernel 7.0. Prefer systemd units. (The claim that 26.04 is the last release with System V
+  init compatibility rests on secondary sources only; unverified.)
+- Unlearn: `apt-key`, `ifconfig`/`netstat`, sudo plugin options, X11-only tooling.
+- ROCm is available via `apt install rocm` (version 7.1.0), but AMD inference defaults to
+  Vulkan (ADR-0019).
 
 ## 8.9 Locally complete
 
