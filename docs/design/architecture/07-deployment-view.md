@@ -13,10 +13,15 @@ tags:
 ## 7.1 The user's machine (the deliverable)
 
 - The REPL + GGUF weights + an install script. No teacher, no training pipeline, no PyTorch.
-- llama.cpp backend picked at install time: CUDA (NVIDIA), ROCm/HIP (Radeon), Vulkan
-  (fallback), CPU (last resort).
-- Local reference index harvested at install time from the user's own man pages and
-  `--help`, so it matches installed versions and nothing needs redistributing.
+- One `llama-server` per user, run as the systemd user service `nl-shell-model.service` on
+  a Unix socket, serving both the command model and the reader (ADR-0018).
+- llama.cpp backend picked at install time (ADR-0019): CUDA on NVIDIA; Vulkan (Mesa RADV)
+  by default on AMD, ROCm opt-in; CPU as the last resort.
+- Local reference index harvested at install time from dpkg-owned man pages and an
+  allowlist of `--help` outputs, without running arbitrary binaries (#23, #49).
+- Files under the XDG base directories (ADR-0020): config and prompts in
+  `~/.config/nl-shell/`, weights and the reference index in `~/.local/share/nl-shell/`,
+  session logs in `~/.local/state/nl-shell/` (private to the user).
 
 VRAM budget on a 16 GB card:
 
