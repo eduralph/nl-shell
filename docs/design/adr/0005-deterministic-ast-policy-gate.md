@@ -1,7 +1,7 @@
 ---
 created: 14.10.2026 19:22
 type: adr
-status: Proposed
+status: Superseded by ADR-0013
 tags:
   - adr
 ---

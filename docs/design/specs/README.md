@@ -6,9 +6,14 @@ tags:
 ---
 # Specifications
 
-Normative, versioned contracts (see `../README.md`). None yet.
+Normative, versioned contracts (see `../README.md`).
 
-Candidates, both from [`docs/plan.md`](../../plan.md) §Data Formats:
+| Spec | Version | Status | Decision |
+|---|---|---|---|
+| [Policy gate](policy-gate/v1.md) | v1 | draft | ADR-0013 |
+| [PTY session protocol](pty-protocol/v1.md) | v1 | draft | ADR-0014 |
+
+Further candidates, from [`docs/plan.md`](../../plan.md) §Data Formats:
 
 - **Session log** (`session-log/v1.md`): one JSONL record per REPL turn. Written by the
   REPL (M0), read by the data pipeline (M2).

@@ -27,44 +27,68 @@ exactly what the REPL gives it. `:context` shows the exact model input.
 
 ## 8.2 Taint
 
-Every item in the state block carries a taint label (ADR-0007):
+Every item in the state block carries a taint label by provenance (ADR-0016):
 
-| Label | Examples | Effect |
+| Label | Examples |
+|---|---|
+| trusted | what the user typed, their confirms and edits, exit codes from the control channel, a cwd made of plain path characters |
+| local-reference | dpkg-owned man pages and `--help` (harvested in the reference VM), the tldr snapshot, retrieved *untainted* history |
+| untrusted | stdout, stderr, file contents, file names, env (beyond a fixed list), reader output, anything from the network |
+
+What the label changes depends on the command's class:
+
+| Class | Clean prompt | Untrusted item in the prompt |
 |---|---|---|
-| trusted | what the user typed, cwd, exit codes, paths the user typed | none |
-| local-reference | `man`, `--help`, `apt-cache show`, the tldr snapshot | none |
-| untrusted | stdout, stderr, file contents, anything from the network | proposal must be confirmed; sudo blocked unless the user typed it |
+| read-only | runs | runs |
+| mutating, session-altering, destructive | confirm | confirm, marked with the untrusted sources |
+| privileged | confirm | **clean-room re-derivation**: the proposal is discarded and the model asked again with trusted and local-reference items only; only that answer is shown |
+
+Taint follows text across history: the session log records each turn's taint, and
+retrieval skips tainted turns.
 
 Taint is about **who could have written the text**, not whether it looks harmful. A clean
 `ls` listing is still untrusted, because a file name is attacker-chosen.
 
 ## 8.3 The policy gate and risk classes
 
-Every command, typed or proposed, is parsed into an AST and classed (ADR-0005):
+Every command, typed or proposed (including raw `\cmd` input), is classed by the
+procedure in [`specs/policy-gate/v1.md`](../specs/policy-gate/v1.md) (ADR-0013):
 
 | Class | Examples | Behaviour |
 |---|---|---|
-| read-only | `ls`, `du`, `systemctl status` | runs directly |
-| mutating | `mkdir`, `apt install`, `git commit` | shown, then confirmed |
+| read-only | `ls`, `du`, `systemctl status` — only what the allowlist names | runs directly |
+| mutating | `mkdir`, `apt install`, `git status` (repository config can run commands) | shown, then confirmed |
+| session-altering | `alias`, `source`, `export PATH=…`, function definitions | confirmed, with a warning that later commands are classed differently |
 | destructive | `rm -r`, `dd`, `mkfs`, `chmod -R` | explicit confirm |
 | privileged | `sudo`, `pkexec`, `su`, `doas` | always confirm |
 
-The class is decided on the parsed AST, so wrappers (`bash -c`, `env`, `xargs`,
-`find -exec`, aliases, functions) do not hide a privileged or destructive step. The model's
-label can raise a class, never lower it. Unparseable means at least mutating.
+Read-only is an **allowlist**: an unknown command, an unlisted option, a prefix assignment,
+a redirection or a non-literal command word makes it at least mutating. Before anything
+runs unconfirmed, every command word is resolved against the **live session snapshot**:
+aliases are expanded, and a function, a non-system executable or changed session hooks
+make it at least mutating. A few things are rejected outright (sudo `-S`/`-p`/`-A`, pipes
+into sudo, redirections to fd 3). The model's label can raise a class, never lower it.
+Unparseable means at least mutating.
 
-## 8.4 Passthrough
+## 8.4 Terminal ownership and sudo passthrough
 
-The mode the REPL enters on a sudo prompt (ADR-0006): keystrokes go to the PTY unread, and
-nothing is logged or captured until sudo returns. Interactive programs (`vim`, `htop`,
-`less`) probably need the same full passthrough. **[OPEN]**, issue in M0.
+While any command runs, keystrokes go to the PTY unread and unlogged, and output is
+mirrored and captured (ADR-0014). Capture pauses while a program uses the alternate
+screen, so `vim`, `less` and `htop` need no special mode.
+
+**Sudo passthrough** (ADR-0015) additionally stops capture and strips the prompt line. It
+starts only when the gate classed the running command privileged *and* the session's own
+`SUDO_PROMPT` (random per session) or a PAM prompt for `su`/`pkexec` appears. It ends at
+the command's done record on the control channel, never on printed text.
 
 ## 8.5 The quarantined reader (dual-LLM pattern)
 
-A second model call that reads raw untrusted text and may only answer in a fixed schema
-(enums, flags, a short summary). The command model sees only that answer. The reader has no
-PTY and no way to run anything. This limits prompt injection to what fits through the schema
-(ADR-0007; Google DeepMind's CaMeL paper).
+A second model call that reads raw untrusted text and may only answer with fixed choices
+and names that exist in the local dpkg/apt index; there is no free-text field (ADR-0017).
+The command model sees only that answer, labelled untrusted. The reader has no PTY, no tools
+and no network. This is the **dual-LLM pattern** (Willison, 2023) with constrained output,
+not CaMeL: it limits prompt injection to the choice of an enum value and a few existing
+names.
 
 ## 8.6 Input modes
 

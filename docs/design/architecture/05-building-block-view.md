@@ -48,10 +48,10 @@ graph TB
 | Input router | Prefix modes (`\`, `?`, `@`, `@@`, `:`); otherwise the intent classifier picks bash or natural language | No (a wrong route still hits the gate) |
 | State capture | Builds the state block; truncates output; filters env; labels taint | Yes (taint, secrets) |
 | Model backend | Builds the prompt from the editable YAML prompts; calls the command model; parses the proposal | No (its output is untrusted) |
-| Policy gate | Parses and classes every command; forces confirm on taint; rejects `sudo -S` and pipes into sudo | **Yes, the most critical** |
+| Policy gate | Classes every command by the allowlist, static rules and the live session snapshot (spec `policy-gate/v1`) | **Yes, the most critical** |
 | Confirm UI | Shows the command exactly as bash will parse it; strips escape sequences | Yes |
-| PTY session | One persistent bash; completion and exit-code detection; sudo passthrough | Yes (password) |
-| Quarantined reader | Reads raw untrusted text in a separate process; returns only schema-valid output | Yes |
+| PTY session | One persistent bash with a control channel on fd 3 for start/done records and session snapshots (spec `pty-protocol/v1`); input forwarding; sudo passthrough | Yes (password, completion) |
+| Quarantined reader | Reads raw untrusted text as a separate model request; returns only fixed choices and validated names (ADR-0017) | Yes |
 | Session log, history | JSONL per turn; appends executed commands to `~/.bash_history`; silent during passthrough | Yes (secrets) |
 | Installer | GPU detection, weight download and verification, install-time doc harvest | Yes (integrity) |
 
