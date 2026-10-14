@@ -30,3 +30,9 @@ where = ["src"]
 # against the tree it sits in (the PDCA gates run it inside a patched worktree).
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "sudo: needs real sudo-rs; runs only in the reference VM (NL_SHELL_TEST_VM=1)",
+    "vm: needs the throwaway reference VM (NL_SHELL_TEST_VM=1)",
+    "gpu: needs a GPU (NL_SHELL_TEST_GPU=1)",
+    "teacher: calls the teacher endpoint (NL_SHELL_TEST_TEACHER=1)",
+]
