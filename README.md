@@ -33,6 +33,23 @@
 > answering `tracker_url` with this repo's issues URL and `contribution_model` = own-repo.
 <!-- template:end -->
 
+## What it is
+
+An experiment in replacing bash *as the interface* while bash stays the executor. You type
+what you want in plain language; a small model running on your own GPU proposes the command;
+a deterministic policy gate decides whether it runs directly or waits for your confirmation;
+a persistent bash session runs it. `sudo` works without leaving the REPL, and the password
+never reaches the model, the logs or the history.
+
+- **Locally complete** — no cloud endpoints, no API keys, no telemetry; works with the
+  network unplugged.
+- **Ubuntu 26.04 native** — trained on sudo-rs, uutils, Wayland and systemd-only habits.
+- **Target hardware** — any 16 GB NVIDIA or AMD Radeon card (CUDA, ROCm or Vulkan via
+  llama.cpp), with a slow but working CPU-only fallback. No training needed to install.
+- **Human in the loop** — anything that changes the system is shown and confirmed first.
+
+The full design, phases and open questions are in [docs/plan.md](docs/plan.md).
+
 ## Status
 
 Early. See the [open milestone](https://github.com/{{OWNER}}/{{PROJECT_NAME}}/milestones) for
