@@ -8,8 +8,8 @@ tags:
 ---
 # 5. Building block view
 
-> Living document. The module names are the planned ones; they become real paths as M0
-> lands. **[OPEN]** until then.
+> Living document. Components not yet built are marked *(planned)* in 5.3; they become
+> real paths as M0 lands.
 
 ## 5.1 Components
 
@@ -63,3 +63,13 @@ graph TB
 | Data pipeline | Back-translation, grounded generation, correction pairs, synthetic sessions, execution filter |
 | Training | QLoRA fine-tuning of the student; intent-classifier training |
 | Eval suite | The metrics in section 10, against any backend |
+
+## 5.3 Code layout
+
+Python package `nl_shell` under `src/`, tests under `tests/`, run with `python3 -m pytest`.
+
+| Module | Component | Status |
+|---|---|---|
+| `nl_shell.cli` | Entry point (`nl-shell`, `python -m nl_shell`) | built (M0.1) |
+| `nl_shell.repl` | The read loop; exit commands | built (M0.1) |
+| PTY session, state capture, policy gate, confirm UI, model backend, input router, session log | — | *(planned, M0.2–M0.10)* |

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nl-shell"
+version = "0.0.0"
+description = "Natural-language shell for Ubuntu 26.04: a small local model proposes commands, bash runs them"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Eduard Ralph", email = "eduard@ralphovi.net" }]
+requires-python = ">=3.12"
+dependencies = [
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[project.scripts]
+nl-shell = "nl_shell.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Tests import from src/ directly, never from an installed copy, so a test always runs
+# against the tree it sits in (the PDCA gates run it inside a patched worktree).
+pythonpath = ["src"]
+testpaths = ["tests"]
