@@ -32,10 +32,10 @@ project pauses after any of them, what exists is usable or publishable.
 
 ### Foundations
 
-- **Proves:** the design is written down and the decisions are ratified before code depends
-  on them.
-- **Retires:** reopening settled questions in every issue; building against an unratified
-  decision.
+- **Proves:** the design is written down before code depends on it, and the decisions are
+  ratified.
+- **Retires:** reopening settled questions in every issue; building against a decision
+  nobody wrote down.
 - **Needs:** nothing.
 - **Done when:** design-doc structure, architecture overview and this proposal are merged;
   ADRs 0002–0012 are ratified (#6); this proposal is accepted; the threat model exists (#1);
@@ -49,8 +49,9 @@ project pauses after any of them, what exists is usable or publishable.
 - **Retires:** the project's largest risk: that a model-driven shell cannot be made safe
   enough to use. Everything that decides what runs is deterministic and testable here,
   independent of which model proposes.
-- **Needs:** Foundations ratified. The open questions on interactive programs and env
-  filtering are settled inside M0.
+- **Needs:** the design written down. M0 may build against Proposed ADRs and follows them
+  if ratification changes them (ADR index). The open questions on interactive programs and
+  env filtering are settled inside M0.
 - **Done when:** a proposed command runs only through the gate; mutating and privileged
   commands always confirm; tests prove the sudo password reaches no log, history, state block
   or `:context`; sessions are logged as JSONL. Run first in a throwaway VM.

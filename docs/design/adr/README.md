@@ -14,10 +14,10 @@ ADRs 0002–0012 record the decisions `docs/plan.md` already makes. ADRs 0013–
 the 2026-10-14 design review (#63) and supersede 0005–0007, 0011 and part of 0008, which were still Proposed. All
 start as Proposed and are ratified in the Foundations milestone (#6).
 
-**Ratification rule:** scaffolding (package layout, test harness, CI) may land before the
-ADRs it touches are ratified; behaviour may not. A PR that implements behaviour an ADR
-decides (the gate, the PTY session, sudo, taint, the reader, serving) waits until that ADR
-is Accepted. M0.1 (#9) was scaffolding.
+**Building against Proposed ADRs:** code may implement an ADR while it is still Proposed;
+it does not wait for ratification. The ADR stays the reference: if ratification changes or
+supersedes it, the code is changed to match, not the other way round. A PR that implements a
+Proposed ADR names it, so that change can be found.
 
 ## Index
 
