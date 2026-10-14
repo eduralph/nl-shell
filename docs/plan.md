@@ -1,5 +1,12 @@
 # NL Shell: Natural-Language Shell for Ubuntu 26.04
 
+> **Historical — frozen on 2026-10-14.** This is the original plan the project grew from. It
+> is no longer maintained and already differs from the decisions in places (for example the
+> reader's network access, the teacher as a user-facing fallback, the policy gate's
+> denylist, and QLoRA on AMD). The live design is in [`design/`](design/README.md): the
+> architecture overview, the ADRs (especially 0013–0020 from the 2026-10-14 design review,
+> #63) and the specs. The milestones follow proposal 0001.
+
 Experiment: replace bash *as the interface* with a locally distilled language model, while bash remains the executor underneath. Goal: express intent in natural language (including sudo operations) without leaving the REPL, with a model that already knows Ubuntu 26.04 and needs few or no lookups.
 
 ## Goals

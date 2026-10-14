@@ -10,9 +10,14 @@ Numbered, immutable records of significant decisions and *why* they were made. A
 never edited after acceptance; a later ADR supersedes it, and this index records the
 supersession. Format follows the lightweight Nygard template (see ADR-0001).
 
-ADRs 0002–0012 record the decisions `docs/plan.md` already makes. ADRs 0013–0020 come from
-the 2026-10-14 design review (#63) and supersede 0005–0007 and part of 0008, which were still Proposed. All
+ADRs 0002–0012 record the decisions `docs/plan.md` already makes. ADRs 0013–0021 come from
+the 2026-10-14 design review (#63) and supersede 0005–0007, 0011 and part of 0008, which were still Proposed. All
 start as Proposed and are ratified in the Foundations milestone (#6).
+
+**Ratification rule:** scaffolding (package layout, test harness, CI) may land before the
+ADRs it touches are ratified; behaviour may not. A PR that implements behaviour an ADR
+decides (the gate, the PTY session, sudo, taint, the reader, serving) waits until that ADR
+is Accepted. M0.1 (#9) was scaffolding.
 
 ## Index
 
@@ -28,7 +33,7 @@ start as Proposed and are ratified in the Foundations milestone (#6).
 | [0008](0008-llama-cpp-gguf-runtime.md) | llama.cpp with GGUF models as the one runtime across GPU vendors | Proposed; backend order superseded by 0019 |
 | [0009](0009-teacher-student-distillation.md) | Distil a small student from a large local teacher | Proposed |
 | [0010](0010-generic-training-data-local-personalization.md) | Ship a model trained on generic data only; personalize locally | Proposed |
-| [0011](0011-python-and-prompt-toolkit.md) | Python and prompt_toolkit for the REPL | Proposed |
+| [0011](0011-python-and-prompt-toolkit.md) | Python and prompt_toolkit for the REPL | Superseded by 0021 |
 | [0012](0012-apache-2-and-dco.md) | Apache-2.0 license and DCO sign-off | Proposed |
 | [0013](0013-policy-gate-v2.md) | Policy gate v2: a read-only allowlist checked against the live session | Proposed |
 | [0014](0014-pty-session-protocol.md) | PTY session protocol and terminal ownership | Proposed |
@@ -38,3 +43,4 @@ start as Proposed and are ratified in the Foundations milestone (#6).
 | [0018](0018-model-serving-and-wire-format.md) | Model serving and the proposal wire format | Proposed |
 | [0019](0019-gpu-backend-order.md) | GPU backend order: CUDA on NVIDIA, Vulkan by default on AMD, ROCm opt-in | Proposed |
 | [0020](0020-configuration-and-file-locations.md) | Configuration and file locations | Proposed |
+| [0021](0021-python-prompt-toolkit-ptyprocess.md) | Python, prompt_toolkit and ptyprocess for the REPL (packaging left to #50) | Proposed |

@@ -24,5 +24,8 @@ prefix away (`\cmd`). Replacing bash as the executor is a non-goal.
 
 Everything nl-shell runs is a bash command the user can read, edit, copy and rerun
 without nl-shell. Executed commands go into `~/.bash_history`. The policy gate can parse
-exactly one language. The cost: nl-shell inherits bash's quoting and expansion rules, which
-the gate must parse correctly (ADR-0005).
+exactly one language. The costs: nl-shell inherits bash's quoting and expansion rules, which
+the gate must parse correctly; and bash is dynamic — aliases, functions, traps and `PATH`
+set earlier in the session change what a command does without changing its text — so
+static classification alone is incomplete. ADR-0013 (live-session checks) and ADR-0014
+(the session's control channel) exist because of this.

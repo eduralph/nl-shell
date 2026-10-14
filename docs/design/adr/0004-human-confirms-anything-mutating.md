@@ -17,7 +17,8 @@ operation is a non-goal for nl-shell.
 
 We will run only read-only commands without asking. Every mutating, destructive or
 privileged command MUST be shown and confirmed by the user first. There is no auto-execute
-or "unsafe" mode (none of Butterfish's `!!`, `@@` or `gencmd -f`). The multi-step agent loop
+or "unsafe" mode (none of Butterfish's auto-executing `!!`, `@@` or `gencmd -f`; nl-shell's own
+`@@` agent loop confirms every step). The multi-step agent loop
 (`@@`) confirms every step and has a step limit. Model output is never piped straight into
 the shell.
 

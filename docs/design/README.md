@@ -65,9 +65,12 @@ The fill-in templates for all four classes are in [`templates/`](templates/READM
 
 ## Reading order for newcomers
 
-1. [`../plan.md`](../plan.md) — the original plan this documentation grew from.
-2. `architecture/01-introduction-and-goals.md` — what this is and why.
-3. `architecture/08-crosscutting-concepts.md` — the core concepts (state block, taint,
-   policy gate, quarantined reader).
-4. [`adr/`](adr/README.md) — the founding decisions.
+1. `architecture/01-introduction-and-goals.md` — what this is and why.
+2. `architecture/08-crosscutting-concepts.md` — the core concepts (state block, taint,
+   policy gate, PTY session, quarantined reader).
+3. [`adr/`](adr/README.md) — the decisions, especially 0013–0020 for the safety layer.
+4. [`specs/`](specs/README.md) — the contracts the code is tested against.
 5. `architecture/09-build-order-and-roadmap.md` — the milestones and where to start.
+
+[`../plan.md`](../plan.md) is the original plan, kept for history and frozen; where it
+differs from the documents above, they win.
