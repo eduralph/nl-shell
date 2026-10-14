@@ -114,6 +114,25 @@ def test_path_to_an_executable_routes_as_a_command(fake_path, tmp_path):
     assert out == COMMAND + "\n"
 
 
+@pytest.mark.parametrize("kind", ["non-executable file", "directory", "no such path"])
+def test_path_that_is_not_an_executable_routes_as_natural_language(
+    fake_path, tmp_path, monkeypatch, kind
+):
+    """A first word containing ``/`` is a command only if it names an executable file."""
+    monkeypatch.chdir(tmp_path)
+    if kind == "non-executable file":
+        (tmp_path / "notes.txt").write_text("hello\n")
+        line = "./notes.txt says what"
+    elif kind == "directory":
+        (tmp_path / "docs").mkdir()
+        line = f"{tmp_path / 'docs'} is where the guides live"
+    else:
+        line = "w/o sudo how do I install this"
+    status, out = run(line)
+    assert status == 0
+    assert out == NATURAL_LANGUAGE + "\n"
+
+
 def test_path_is_read_on_every_line(fake_path, tmp_path, monkeypatch):
     """``$PATH`` is looked up per line, not cached: a tool added later is found."""
     later = tmp_path / "later"
