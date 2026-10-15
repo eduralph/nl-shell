@@ -1,7 +1,8 @@
 """The read-eval loop.
 
-Reads lines, handles the exit commands, and routes everything else as a shell command or
-natural language (``nl_shell.router``). Nothing runs yet: the policy gate, the PTY session
+Reads lines, handles the exit commands, then the input-mode prefixes
+(``nl_shell.input_modes``), and routes everything else as a shell command or natural
+language (``nl_shell.router``). Nothing runs yet: the policy gate, the PTY session
 and the model backend arrive in later M0 issues (see
 docs/design/architecture/05-building-block-view.md).
 """
@@ -12,10 +13,11 @@ from collections.abc import Callable
 from typing import TextIO
 import sys
 
+from nl_shell import input_modes
+from nl_shell.input_modes import Mode
 from nl_shell.router import Route, route
 
 PROMPT = "nl> "
-EXIT_COMMANDS = frozenset({":quit", ":exit"})
 COMMAND_NOT_YET = (
     "That looks like a shell command, but nl-shell can't run anything yet: "
     "the bash session arrives in M0.2."
@@ -57,6 +59,19 @@ class Repl:
             text = line.strip()
             if not text:
                 continue
-            if text in EXIT_COMMANDS:
+            if input_modes.is_exit(text):
                 return 0
-            print(REPLIES[route(text)], file=self._out)
+            print(self._reply(text), file=self._out)
+
+    @staticmethod
+    def _reply(text: str) -> str:
+        """The reply for one stripped, non-blank, non-exit line."""
+        prefixed = input_modes.parse(text)
+        if prefixed is None:
+            return REPLIES[route(text)]
+        if prefixed.mode is Mode.COMMAND and prefixed.payload:
+            # `\cmd` skips only the intent classifier (here, the router); it never skips
+            # the policy gate. ADR-0013 §7 (Proposed; #64 closed on it). The gate is wired
+            # in by #78, so `prefixed.payload` is the command text the gate will receive.
+            return REPLIES[Route.COMMAND]
+        return input_modes.reply(prefixed)
