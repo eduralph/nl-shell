@@ -27,6 +27,7 @@ tags:
 | Q6 | A request on a 16 GB test-matrix card | First token and full command sub-second | 3 |
 | Q7 | A request typed with an old habit (`ifconfig`, `apt-key`) | Proposal uses the 26.04 way | 4 |
 | Q8 | Fresh install on a supported machine | Correct backend chosen; works without training | 5 |
+| Q9 | Model server killed mid-request | The prompt returns within the timeout; typed commands keep working (ADR-0018 point 7) | 3 |
 
 ### Evaluation targets
 
