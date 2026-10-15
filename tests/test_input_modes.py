@@ -25,8 +25,8 @@ PROPOSE = (
 AGENT = "@@ is reserved for the agent loop, which arrives with M0.6b (#76)."
 CONTEXT = ":context is not available yet: it arrives with M0.8 (#16)."
 HISTORY = ":history is not available yet: it arrives with M0.9 (#17)."
-# `:status` prints a block whose FIRST line is `nl-shell <version>`. Later issues (#92,
-# #16, #77) append lines to it, so the table checks only that first line, not the block.
+# `:status` prints a block whose FIRST line is `nl-shell <version>`. A session adds its own
+# lines after it (#92, #16, #77), so the table checks only that first line, not the block.
 STATUS = "nl-shell "
 UNKNOWN_META = (
     "Unknown meta-command :frobnicate. Known: :context, :history, :status, :quit, :exit."
@@ -162,21 +162,17 @@ def test_status_prints_the_version_line(fake_path):
 
 
 def test_status_lines_can_be_extended(fake_path):
-    """Later issues add `:status` lines by appending a zero-argument callable."""
+    """A session adds `:status` lines by passing zero-argument callables to its Repl."""
     import nl_shell
-    from nl_shell import input_modes
 
-    def extra():
-        return "extra: yes"
-
-    input_modes.STATUS_LINES.append(extra)
-    try:
-        status, out = run(":status")
-    finally:
-        input_modes.STATUS_LINES.remove(extra)
-    assert status == 0
-    lines = out.splitlines()
+    out = io.StringIO()
+    assert Repl(scripted(":status"), out, status_lines=[lambda: "extra: yes"]).run() == 0
+    lines = out.getvalue().splitlines()
     assert lines.index("extra: yes") > lines.index(STATUS + nl_shell.__version__)
+    # The line belongs to that session only: a new Repl does not show it.
+    status, out = run(":status")
+    assert status == 0
+    assert "extra: yes" not in out.splitlines()
 
 
 # The exit commands are meta-commands: the payload after `:` is stripped for them too, so

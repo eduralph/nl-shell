@@ -9,12 +9,12 @@ docs/design/architecture/05-building-block-view.md).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TextIO
 import sys
 
 from nl_shell import input_modes
-from nl_shell.input_modes import Mode
+from nl_shell.input_modes import Mode, StatusLine
 from nl_shell.router import Route, route
 
 PROMPT = "nl> "
@@ -35,16 +35,24 @@ REPLIES = {
 class Repl:
     """One REPL session. ``read`` returns the next line or raises EOFError."""
 
-    def __init__(self, read: Callable[[str], str], out: TextIO) -> None:
+    def __init__(
+        self,
+        read: Callable[[str], str],
+        out: TextIO,
+        status_lines: Sequence[StatusLine] = (),
+    ) -> None:
         self._read = read
         self._out = out
+        # This session's own `:status` lines, after the version line
+        # (see the `StatusLine` comment in nl_shell.input_modes).
+        self._status_lines = tuple(status_lines)
 
     @classmethod
-    def interactive(cls) -> "Repl":
+    def interactive(cls, status_lines: Sequence[StatusLine] = ()) -> "Repl":
         from prompt_toolkit import PromptSession
 
         session: PromptSession[str] = PromptSession()
-        return cls(session.prompt, sys.stdout)
+        return cls(session.prompt, sys.stdout, status_lines)
 
     def run(self) -> int:
         """Loop until an exit command or end of input. Returns the exit status."""
@@ -63,8 +71,7 @@ class Repl:
                 return 0
             print(self._reply(text), file=self._out)
 
-    @staticmethod
-    def _reply(text: str) -> str:
+    def _reply(self, text: str) -> str:
         """The reply for one stripped, non-blank, non-exit line."""
         prefixed = input_modes.parse(text)
         if prefixed is None:
@@ -74,4 +81,4 @@ class Repl:
             # the policy gate. ADR-0013 §7 (Proposed; #64 closed on it). The gate is wired
             # in by #78, so `prefixed.payload` is the command text the gate will receive.
             return REPLIES[Route.COMMAND]
-        return input_modes.reply(prefixed)
+        return input_modes.reply(prefixed, self._status_lines)

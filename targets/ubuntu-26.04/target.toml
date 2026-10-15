@@ -1,0 +1,25 @@
+# The ubuntu-26.04 target (ADR-0023). nl-shell reads this file at start-up
+# (src/nl_shell/targets.py) to choose and describe the active target.
+#
+#   id                   the target id; must equal this folder's name
+#   display_name         the name `:status` shows
+#   shell                the shell nl-shell drives; `bash` is the only accepted value
+#   package_owner_query  argv that asks the package manager which package owns a file
+#                        (the file path is appended); the gate's package-owner test (ADR-0013)
+#   [os_release]         the exact os-release(5) `ID` and `VERSION_ID` this target matches;
+#                        no `ID_LIKE` or nearby-version fallback
+#   [sudo]               the sudo implementation on this OS and the version nl-shell's sudo
+#                        handling was checked against (ADR-0015)
+
+id = "ubuntu-26.04"
+display_name = "Ubuntu 26.04 LTS"
+shell = "bash"
+package_owner_query = ["dpkg", "-S"]
+
+[os_release]
+ID = "ubuntu"
+VERSION_ID = "26.04"
+
+[sudo]
+implementation = "sudo-rs"
+version = "0.2.13"
