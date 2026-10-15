@@ -56,6 +56,7 @@ lands, it is canonical and this table points to it.
 | Small-model quality | A 1.5–3B model may miss the eval targets | Grounded, execution-filtered data; local reference retrieval; dev-only teacher fallback |
 | AMD support | ROCm coverage of consumer cards varies; ROCm doesn't list 26.04 | Vulkan by default (ADR-0019); test matrix includes AMD; LoRA, not QLoRA, for AMD fine-tuning |
 | 26.04 point releases | Tools and defaults drift | Retrain loop (M4.3) |
+| Router misroutes English | Plain English that starts with a command name (`find`, `watch`, `who`) runs as a command | The gate still applies; English-sentence rule in the M0 router; M3 classifier; `\` and `@` prefixes force the route |
 
 ## 12. Glossary
 

@@ -31,6 +31,7 @@ where nothing is captured. Untrusted text the model needs to understand goes thr
 | Fast on consumer GPUs | Small distilled student; llama.cpp GGUF on every vendor | 0008, 0009 |
 | Knows 26.04 without lookups | Grounded training data filtered by execution in a 26.04 VM | 0009 |
 | Privacy | Locally complete; generic training data; local personalization | 0003, 0010 |
+| Interaction shape | Own the session in a PTY front end; keep stock bash as the executor | 0002, 0014, 0024 |
 
 ## 4.3 Build strategy
 
