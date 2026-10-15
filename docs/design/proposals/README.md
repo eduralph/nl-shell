@@ -9,6 +9,8 @@ tags:
 KEP/RFC-style proposals for larger changes and milestone plans. Start one by copying
 `../templates/proposal.md` into `draft/`. Accepted proposals move to `accepted/` and are never
 edited; a later supersession is recorded **here**, not on the frozen file.
+The only change allowed to an accepted proposal is setting its status line to `implemented`
+or `withdrawn`.
 
 ## Index
 
