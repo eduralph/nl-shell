@@ -16,18 +16,19 @@ A REPL sits between the user and a persistent bash in a PTY. For natural-languag
 builds a **state block** (cwd, last command, exit code, truncated output, filtered env, each
 item labelled with its **taint**) and asks a small local **command model** for a proposal.
 A deterministic **policy gate** parses the proposal and classes it; read-only commands run,
-everything else waits for a confirm. sudo prompts switch the terminal into **passthrough**,
-where nothing is captured. Untrusted text the model needs to understand goes through a
-**quarantined reader** that may only return structured data. The command model is a
-**student** distilled from a larger **teacher** and trained to know Ubuntu 26.04.
+everything else waits for a confirm. A command the gate classed privileged switches the
+terminal into **passthrough** when the session's own sudo prompt appears; nothing is captured
+then, and no other command can enter it. Untrusted text the model needs to understand goes
+through a **quarantined reader** that may only return structured data. The command model is
+a **student** distilled from a larger **teacher** and trained to know Ubuntu 26.04.
 
 ## 4.2 Key strategies
 
 | Problem | Strategy | ADR |
 |---|---|---|
-| The model can be wrong or steered | Deterministic AST gate; human confirms anything mutating | 0004, 0005 |
-| Prompt injection through output | Taint labels; quarantined reader | 0007 |
-| The sudo password | PTY passthrough, never captured | 0006 |
+| The model can be wrong or steered | Deterministic AST gate; human confirms anything mutating | 0004, 0013 |
+| Prompt injection through output | Taint labels; quarantined reader | 0016, 0017 |
+| The sudo password | PTY passthrough, never captured | 0014, 0015 |
 | Fast on consumer GPUs | Small distilled student; llama.cpp GGUF on every vendor | 0008, 0009 |
 | Knows 26.04 without lookups | Grounded training data filtered by execution in a 26.04 VM | 0009 |
 | Privacy | Locally complete; generic training data; local personalization | 0003, 0010 |
