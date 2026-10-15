@@ -44,8 +44,10 @@ the REPL shows the command and waits for the user's confirm or edit before runni
 4. The prompt line, with its pwfeedback asterisks, is removed from captured output. The
    command's done record on the control channel ends passthrough (ADR-0014, ADR-0015).
 
-sudo-rs caches credentials per tty, so later sudo commands in the session usually do not
-prompt.
+sudo-rs caches credentials per tty. nl-shell closes the cache with a logged `sudo -k` after
+the done record, so the next sudo prompts again, unless the user sets
+`sudo.keep_credentials = true`; then every later confirm says the cache is warm
+(ADR-0015 point 6).
 
 ## 6.3 Fix on failure
 
