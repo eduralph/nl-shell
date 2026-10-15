@@ -46,6 +46,7 @@ user's own screen and in the local model's context.
 | environment variables, except a fixed list nl-shell itself sets or the shell defines (`HOME`, `USER`, `SHELL`, `LANG`, `TERM`, `PWD`) | untrusted |
 | quarantined-reader output (ADR-0017) | untrusted |
 | answers of `?` (ask mode) that read untrusted text | untrusted |
+| output of a command that read a sensitive location, and of the environment dumpers, as listed in the target's `sensitive.toml` (ADR-0025) | secret: shown on screen only; never sent to the command model or the reader, never logged, never retrieved |
 
 2. **Effects per class** (the class comes from the gate, spec `policy-gate/v1`):
 

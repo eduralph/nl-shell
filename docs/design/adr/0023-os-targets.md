@@ -43,6 +43,7 @@ in one folder in the repository, `targets/<id>/`, where `<id>` is the os-release
 | `target.toml` | id, display name, os-release match, shell (`bash`), package-owner query (e.g. `dpkg -S`), sudo implementation and version checked | REPL, gate |
 | `model.toml` | the model manifest (below) | installer, REPL |
 | `allowlist.toml` | the policy gate's read-only allowlist for this OS | gate |
+| `sensitive.toml` | sensitive locations and environment dumpers (ADR-0025) | gate, REPL |
 | `gate-vectors.toml` | the gate's conformance vectors for this OS's default session | gate tests |
 | `prompts/` | OS-specific prompt pieces (the default `prompts.yaml` layer) | REPL, training |
 | `harvest.toml` | what the pipeline harvests and the VM image it builds and filters in | training |

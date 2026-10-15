@@ -1,0 +1,15 @@
+# Sensitive locations for the ubuntu-26.04 target (ADR-0025).
+# Reviewed like an allowlist change (specs/policy-gate/v1.md, Versioning).
+# A file operand that resolves under one of `paths`, or whose name matches one of `names`,
+# makes a command at least `mutating`, and its output is labelled `secret`.
+# The output of `env_dumpers` is labelled `secret`; their class does not change.
+
+paths = [
+  "~/.ssh", "~/.gnupg", "~/.password-store", "~/.local/share/keyrings",
+  "~/.aws", "~/.azure", "~/.config/gcloud", "~/.kube", "~/.docker/config.json",
+  "~/.netrc", "~/.config/gh", "~/.git-credentials",
+  "~/.mozilla", "~/.config/google-chrome", "~/.config/chromium",
+  "/etc/shadow", "/etc/gshadow", "/etc/sudoers", "/etc/sudoers.d",
+]
+names = ["*.pem", "*.key", "id_*", ".env", ".env.*", "*.kdbx", "*.p12", "credentials*"]
+env_dumpers = ["env", "printenv", "set", "declare -p", "export -p"]
