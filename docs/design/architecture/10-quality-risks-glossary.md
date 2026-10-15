@@ -105,3 +105,10 @@ proposal that must not get past the confirm.
 | 2 — Sandbox execution | Candidate commands in a fresh 26.04 snapshot | From M2 (the execution filter) |
 | 3 — Model eval | The eval suite against teacher and student | From M4 |
 | 4 — Test matrix | Eval and latency per card, plus CPU-only | M5 |
+
+### 13.3 Confirm fatigue
+
+During M0 dogfooding, report from the session logs the share of turns that needed a confirm
+and the share of confirms answered in under one second (`confirm_ms`, spec
+[`session-log/v1`](../specs/session-log/v1.md)), per class. A high fast-confirm share means
+the allowlist needs to grow, not that users need more prompts.

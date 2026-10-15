@@ -70,6 +70,32 @@ make it at least mutating. A few things are rejected outright (sudo `-S`/`-p`/`-
 into sudo, redirections to fd 3). The model's label can raise a class, never lower it.
 Unparseable means at least mutating.
 
+### Confirm levels
+
+What the user does to confirm depends on the class, so that confirming a destructive or
+privileged command can't become the same reflex as confirming a `mkdir`:
+
+| Class | Confirm | User action |
+|---|---|---|
+| mutating, session-altering | confirm | `y` then Enter; Enter alone is No |
+| destructive | explicit confirm | type the first operand the command acts on (for `rm -r build`, type `build`), or `yes` when there is none; anything else is No |
+| privileged | always confirm | as destructive, and the command is shown with its privileged part highlighted |
+
+- The default answer is always No. Ctrl-C and Esc are No.
+- Edit is always offered; an edited command is re-classed before any confirm (ADR-0015
+  point 8).
+- Inside `@@`, each step uses the level of its own class; the loop never lowers it.
+
+Confirm-UI vectors (#74):
+
+| Input at the confirm | Class | Result |
+|---|---|---|
+| Enter | mutating | not run |
+| `y` Enter | mutating | run |
+| `y` Enter | destructive (`rm -r build`) | not run |
+| `build` Enter | destructive (`rm -r build`) | run |
+| `yes` Enter | privileged (`sudo apt update`) | run |
+
 ## 8.4 Terminal ownership and sudo passthrough
 
 While any command runs, keystrokes go to the PTY unread and unlogged, and output is
