@@ -2,7 +2,8 @@ name: Docs checks
 
 # Enforces ADR-0001 (docs/design/adr/0001-record-architecture-decisions.md:22-23, :30-31):
 # frozen design records (Accepted/Superseded ADRs, non-draft proposals and specs) are never
-# edited, except for a listed status-line change.
+# edited, except for a listed status-line change. It also checks that relative Markdown
+# links resolve (scripts/docs_links.py).
 # No path filter, so the job always reports and can be made a required check.
 # `pull_request` only, never `pull_request_target`: this runs PR-supplied code.
 on:
@@ -41,3 +42,7 @@ jobs:
             echo "scripts/docs_checks.py is not on the base; running the PR's copy"
             python -I scripts/docs_checks.py immutability "$BASE" "$HEAD"
           fi
+      # Every relative link in a tracked .md file must point at a tracked file or
+      # directory. tests/test_docs_links.py runs the same check in tests.yml.
+      - name: Relative links resolve
+        run: python -I scripts/docs_links.py
