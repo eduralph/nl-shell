@@ -34,6 +34,12 @@ ADR-0003 (locally complete).
    line for that session. A URL in `config.toml` alone is refused with a message. This
    keeps a copied config from breaking ADR-0003.
 4. **`:status` shows** which files were loaded, the endpoint in use, and the backend.
+5. **Settings that change safety behaviour** are listed here with their defaults, so a
+   reviewer can see every switch in one place:
+
+   | Key | Default | Effect |
+   |---|---|---|
+   | `sudo.keep_credentials` | `false` | keep the sudo credential cache open after a privileged command (ADR-0015 point 6) |
 
 ## Consequences
 

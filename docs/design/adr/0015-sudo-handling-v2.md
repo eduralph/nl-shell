@@ -59,8 +59,14 @@ and completion comes from a control channel that printed text can't reach.
    -i`, `sudo -s`, `sudo su`, `sudo bash`, bare `su`). Typed input that opens a root shell
    runs in full passthrough with capture off until it exits, and the confirm says that
    nl-shell can't see or gate anything inside it.
-6. **The credential cache is closed when it matters.** nl-shell runs `sudo -k` as a
-   visible, logged housekeeping command when the REPL exits and when an `@@` loop ends.
+6. **The credential cache is closed after use.** After the done record of every command
+   the gate classed `privileged`, nl-shell runs `sudo -k` as a visible, logged
+   housekeeping command, and again when the REPL exits and when an `@@` loop ends. The
+   user MAY keep the cache open with `sudo.keep_credentials = true` in `config.toml`
+   (ADR-0020). nl-shell tracks the cache as *warm* from the done record of a privileged
+   command, or of a typed `sudo -v`, until its next `sudo -k`. While it is warm, every
+   mutating, session-altering or destructive confirm MUST say: "sudo credentials are
+   cached: this command can gain root without a password."
 7. **No sudoers drop-ins.** nl-shell ships none and its docs recommend none. No blanket
    `NOPASSWD`.
 8. **"Typed by the user"** (ADR-0016) means the command text came from the user's own input
@@ -79,3 +85,6 @@ and completion comes from a control channel that printed text can't reach.
   point 2.
 - `su` and `pkexec` prompts can't be set by nl-shell; point 1's class condition is what
   protects them.
+- A second privileged command in the same session asks for the password again unless the
+  user opts out. That is the price of point 6: without it, a confirmed `make install` or
+  `./build.sh` (classed mutating) could run an inner `sudo` as root with no password.
