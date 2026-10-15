@@ -48,6 +48,14 @@ constrained generation per request.
    #77).
 6. Training (M3) produces outputs in the proposal format, so the student learns the
    format it is served with.
+7. **The shell works without the model.** Every model request has a timeout
+   (`model.timeout_s`, default 10). On a timeout, a connection error or a failed health
+   check (`llama-server`'s `/health`), nl-shell marks the model *unavailable*:
+   natural-language input gets "model unavailable" and the reason, typed commands still
+   go through the gate and run, and `:status` shows the state. nl-shell retries in the
+   background and says when the model is back. It MUST NOT block the prompt while it
+   waits. If `model.cpu_fallback = true`, it restarts the server on the CPU backend
+   (ADR-0019) and says so.
 
 ## Consequences
 
@@ -56,5 +64,6 @@ constrained generation per request.
   can, which is code running as the user and outside the threat model; the threat model
   lists the socket as an input (#71).
 - The REPL never has to interpret prose to find a command.
-- A systemd user service is one more install step (#48), and the REPL needs a fallback
-  message when the service can't start (no GPU, no weights).
+- A systemd user service is one more install step (#48). When the service can't start
+  (no GPU, no weights) or fails later (a game takes the VRAM, a driver resets), point 7
+  keeps the REPL a working, gated shell.
