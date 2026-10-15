@@ -8,7 +8,11 @@ tags:
 
 Numbered, immutable records of significant decisions and *why* they were made. An ADR is
 never edited after acceptance; a later ADR supersedes it, and this index records the
-supersession. Format follows the lightweight Nygard template (see ADR-0001).
+supersession. The only change ever allowed to an Accepted ADR is setting its status line to
+`Superseded by ADR-NNNN`; a Superseded ADR is never edited at all, including the ones
+superseded while still Proposed (0005–0007, 0011), while an ADR that is only partly
+superseded and still Proposed (0008) stays editable like any Proposed ADR. Format follows
+the lightweight Nygard template (see ADR-0001).
 
 ADRs 0002–0012 record the decisions `docs/plan.md` already makes. ADRs 0013–0021 come from
 the 2026-10-14 design review (#63) and supersede 0005–0007, 0011 and part of 0008, which were still Proposed. All
