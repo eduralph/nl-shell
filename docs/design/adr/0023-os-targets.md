@@ -85,6 +85,20 @@ bash-specific parts (proposal format, gate parser and rules, PTY hooks, history 
 builtins) stay as ADR-0002 and ADR-0013–0015 describe. Adding a shell is a later ADR; this
 one only keeps the shell a field of the target so the folder layout does not change then.
 
+When a second shell is added, a target becomes a pair of OS release and shell, and its
+parts split along that line:
+
+- **Per OS:** harvest config and VM image, allowlist semantics (which executables are
+  read-only), the package-owner query, the sudo implementation, and the base model.
+- **Per shell:** front-end hooks and control channel, the gate's parser and static rules,
+  the proposal dialect, the history file and the router's builtins.
+- **Model:** one base model per OS, with a small per-shell adapter loaded at run time
+  through llama.cpp's LoRA support. Shells close enough to share bash's dialect (zsh, for
+  example) may share its adapter if their eval split passes.
+
+Gate vectors and eval splits exist per pair. Until that ADR, the shell stays a field of
+`target.toml` with `bash` as the only value.
+
 ## Consequences
 
 Porting to a new OS becomes: add a folder, write its allowlist and probes, run the pipeline
