@@ -17,7 +17,7 @@ plain-input heuristic the M3 classifier (#40) replaces, and prefixes are not heu
 from __future__ import annotations
 
 import enum
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import nl_shell
@@ -74,16 +74,23 @@ def is_exit(text: str) -> bool:
     )
 
 
-# `:status` prints one line per entry, in list order. Each entry is a zero-argument
-# callable returning one line. Later issues add their lines by appending here (#92 active
-# target, #16 prompt files loaded, #77 endpoint and backend), with no other change.
-STATUS_LINES: list[Callable[[], str]] = [
-    lambda: f"nl-shell {nl_shell.__version__}",
-]
+# One `:status` line: a zero-argument callable returning the line's text.
+StatusLine = Callable[[], str]
+
+# `:status` prints the version line, then the session's own lines in order. The session's
+# lines are not module state: whoever builds the session passes them to
+# `Repl(..., status_lines=...)` (or `Repl.interactive(status_lines=...)`), the Repl hands
+# them to `reply`, and `reply` to `status`. So a line never leaks into another Repl or a
+# later run in the same process, and a Repl built with no lines shows only the version.
+# A later issue adds a line by adding its callable to the tuple `nl_shell.cli.main` builds
+# for the session, after the active-target lines (#16 prompt files loaded, #77 endpoint
+# and backend); nothing here changes.
+def version_line() -> str:
+    return f"nl-shell {nl_shell.__version__}"
 
 
-def status() -> str:
-    return "\n".join(line() for line in STATUS_LINES)
+def status(session_lines: Sequence[StatusLine] = ()) -> str:
+    return "\n".join(line() for line in (version_line, *session_lines))
 
 
 ASK_NOT_YET = (
@@ -98,12 +105,12 @@ AGENT_RESERVED = "@@ is reserved for the agent loop, which arrives with M0.6b (#
 CONTEXT_NOT_YET = ":context is not available yet: it arrives with M0.8 (#16)."
 HISTORY_NOT_YET = ":history is not available yet: it arrives with M0.9 (#17)."
 
-# Meta-commands by exact, case-sensitive name. The exit commands (EXIT_NAMES) are handled
-# by the REPL loop before dispatch (`is_exit`), so they are listed as known but not looked
-# up here.
-META_COMMANDS: dict[str, Callable[[], str]] = {
-    "context": lambda: CONTEXT_NOT_YET,
-    "history": lambda: HISTORY_NOT_YET,
+# Meta-commands by exact, case-sensitive name. Each takes the session's `:status` lines
+# (only `:status` uses them). The exit commands (EXIT_NAMES) are handled by the REPL loop
+# before dispatch (`is_exit`), so they are listed as known but not looked up here.
+META_COMMANDS: dict[str, Callable[[Sequence[StatusLine]], str]] = {
+    "context": lambda _status_lines: CONTEXT_NOT_YET,
+    "history": lambda _status_lines: HISTORY_NOT_YET,
     "status": status,
 }
 
@@ -128,10 +135,11 @@ REPLIES = {
 }
 
 
-def reply(prefixed: Prefixed) -> str:
+def reply(prefixed: Prefixed, status_lines: Sequence[StatusLine] = ()) -> str:
     """The reply for a prefixed line in any mode but a non-empty ``\\`` command.
 
     A ``\\`` command with a payload belongs to the command route, which the REPL owns.
+    ``status_lines`` are the session's own ``:status`` lines, after the version line.
     """
     mode, payload = prefixed
     if mode is Mode.META:
@@ -140,7 +148,7 @@ def reply(prefixed: Prefixed) -> str:
         command = META_COMMANDS.get(payload)
         if command is None:
             return f"Unknown meta-command :{payload}. Known: {known_meta_commands()}."
-        return command()
+        return command(status_lines)
     if not payload:
         return USAGE[mode]
     return REPLIES[mode]

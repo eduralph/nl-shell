@@ -1,3 +1,4 @@
-"""nl-shell: a natural-language shell for Ubuntu 26.04."""
+"""nl-shell: a natural-language shell. A small local model proposes commands, bash runs
+them."""
 
 __version__ = "0.0.0"
