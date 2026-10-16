@@ -16,7 +16,9 @@ the lightweight Nygard template (see ADR-0001).
 
 ADRs 0002–0012 record the decisions `docs/plan.md` already makes. ADRs 0013–0021 come from
 the 2026-10-14 design review (#63) and supersede 0005–0007, 0011 and part of 0008, which were still Proposed. All
-start as Proposed and are ratified in the Foundations milestone (#6).
+start as Proposed and are ratified in the Foundations milestone (#6). ADR-0024 comes from the
+2026-10-15 review of the interaction shape, and ADR-0025 from the hardening review of the
+same day.
 
 **Building against Proposed ADRs:** code may implement an ADR while it is still Proposed;
 it does not wait for ratification. The ADR stays the reference: if ratification changes or
@@ -50,3 +52,5 @@ Proposed ADR names it, so that change can be found.
 | [0021](0021-python-prompt-toolkit-ptyprocess.md) | Python, prompt_toolkit and ptyprocess for the REPL (packaging left to #50) | Proposed |
 | [0022](0022-english-input-first-replies-follow-locale.md) | English input first; replies follow the system locale | Proposed |
 | [0023](0023-os-targets.md) | OS targets: one folder per OS, models referenced by manifest | Proposed |
+| [0024](0024-pty-front-end-not-readline-or-fork.md) | nl-shell owns the session: a PTY front end, not a readline integration or a bash fork | Proposed |
+| [0025](0025-sensitive-paths.md) | Sensitive paths: reading credentials needs a confirm, and the output stays on screen | Proposed |

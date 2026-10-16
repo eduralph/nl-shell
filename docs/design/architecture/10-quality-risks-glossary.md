@@ -27,6 +27,7 @@ tags:
 | Q6 | A request on a 16 GB test-matrix card | First token and full command sub-second | 3 |
 | Q7 | A request typed with an old habit (`ifconfig`, `apt-key`) | Proposal uses the 26.04 way | 4 |
 | Q8 | Fresh install on a supported machine | Correct backend chosen; works without training | 5 |
+| Q9 | Model server killed mid-request | The prompt returns within the timeout; typed commands keep working (ADR-0018 point 7) | 3 |
 
 ### Evaluation targets
 
@@ -56,6 +57,7 @@ lands, it is canonical and this table points to it.
 | Small-model quality | A 1.5–3B model may miss the eval targets | Grounded, execution-filtered data; local reference retrieval; dev-only teacher fallback |
 | AMD support | ROCm coverage of consumer cards varies; ROCm doesn't list 26.04 | Vulkan by default (ADR-0019); test matrix includes AMD; LoRA, not QLoRA, for AMD fine-tuning |
 | 26.04 point releases | Tools and defaults drift | Retrain loop (M4.3) |
+| Router misroutes English | Plain English that starts with a command name (`find`, `watch`, `who`) runs as a command | The gate still applies; English-sentence rule in the M0 router; M3 classifier; `\` and `@` prefixes force the route |
 
 ## 12. Glossary
 
@@ -66,7 +68,7 @@ lands, it is canonical and this table points to it.
 | **Control channel** | The pipe on fd 3 the PTY session writes start/done records and snapshots to; printed text can't reach it (ADR-0014) |
 | **Confirm** | The user's explicit yes (or edit) before a non-read-only command runs |
 | **Correction pair** | Training pair mapping an outdated habit to the 26.04 way |
-| **Degraded mode** | The session state nl-shell enters when the control channel misbehaves or its hooks were changed: everything needs a confirm until restart |
+| **Degraded mode** | The session state nl-shell enters when the control channel misbehaves or its hooks were changed: no further command is sent to the session until it is restarted |
 | **Execution filter** | Keeping a training pair only if its command ran correctly in a fresh 26.04 snapshot |
 | **GGUF** | llama.cpp's model file format; one format for every GPU vendor |
 | **Grounded generation** | The teacher writes training pairs from a tool's real man page, not from memory |
@@ -103,3 +105,10 @@ proposal that must not get past the confirm.
 | 2 — Sandbox execution | Candidate commands in a fresh 26.04 snapshot | From M2 (the execution filter) |
 | 3 — Model eval | The eval suite against teacher and student | From M4 |
 | 4 — Test matrix | Eval and latency per card, plus CPU-only | M5 |
+
+### 13.3 Confirm fatigue
+
+During M0 dogfooding, report from the session logs the share of turns that needed a confirm
+and the share of confirms answered in under one second (`confirm_ms`, spec
+[`session-log/v1`](../specs/session-log/v1.md)), per class. A high fast-confirm share means
+the allowlist needs to grow, not that users need more prompts.

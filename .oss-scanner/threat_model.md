@@ -1,7 +1,7 @@
 # Threat model: nl-shell
 
 Reviewer-facing summary of what an attacker can reach and how bad each outcome is. The
-design it describes is in [docs/design/](../docs/design/README.md) (ADRs 0013–0020 for the safety
+design it describes is in [docs/design/](../docs/design/README.md) (ADRs 0013–0020 and 0025 for the safety
 layer). M0 is in progress: this file describes the design, and each change that lands code
 updates it to describe the code.
 Where the two differ, this file should describe what the code does today.
@@ -115,6 +115,15 @@ Trusted:
   commands and the session's own `SUDO_PROMPT`, and ends only at the control channel's
   done record. The gate rejects `sudo -S`, `-p`, `-A`, overrides of `SUDO_PROMPT` and
   `SUDO_ASKPASS`, and pipes into sudo (ADR-0015).
+- **A confirmed command can't silently use a warm sudo cache.** nl-shell runs `sudo -k`
+  after every privileged command unless the user sets `sudo.keep_credentials`; while the
+  cache is warm, every mutating, session-altering or destructive confirm says the command
+  can gain root without a password (ADR-0015 point 6).
+- **Credentials stay on screen.** Reading a sensitive location (the target's
+  `sensitive.toml`, `/proc/<pid>/` files other than `status`, `stat`, `limits`) needs a
+  confirm that names it. The output of such a read, and of an environment dumper (`env`,
+  `printenv`), is labelled secret: shown on screen only, never sent to the command model or
+  the reader, never logged, never retrieved as history (ADR-0025).
 - **What the user confirms is exactly what runs**, byte for byte: bracketed paste, no
   history expansion (ADR-0014). The confirm UI renders from the parsed command with hidden
   characters escaped; proposals with bidi or control characters are rejected (#74).
@@ -122,6 +131,10 @@ Trusted:
 - **Output rendering is filtered everywhere**: the mirrored PTY output, `:context` and
   `:history` must not let printed text write the clipboard (OSC 52) or spoof nl-shell's
   own UI. Full-screen programs keep their escape sequences, but not those.
+- **Background output can't reach the screen during a confirm.** Between commands, PTY
+  output from background jobs is buffered and shown only outside a confirm, under
+  `[background output]`; it is untrusted and never enters the state block (spec
+  `pty-protocol/v1` §6).
 - **Untrusted text never becomes trusted**: reader output is untrusted, retrieved history
   is at most local-reference, and tainted turns aren't retrieved (ADR-0016, ADR-0017).
 - **Model output is never piped into the shell without going through the gate.**
@@ -165,6 +178,14 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
 - **Child processes inherit the control channel (fd 3).** Only code running as the user can
   use it, which is out of scope.
 - **The PTY session runs with the user's own rights.** There is no sandbox around the shell.
+- **The session core claims only a closed list (interim, until #141).**
+  `src/nl_shell/session.py` claims only what pty-protocol v1 §1.3 lists: a command that ran is never reported as
+  "nothing ran" for the listed cases; a confirmed change to `PROMPT_COMMAND`, `PS0`, or the
+  attributes of `PS1`/`PS2` degrades at that command's snapshot (its code may still run once
+  after it), and one to a plain `PS1`/`PS2` is overwritten. Nothing else is claimed until #141
+  (tamper checks) and #145 (review of what else can evade the hooks) land. `run()` without
+  a timeout can wait forever on a terminal read on an fd other than 0 (`read -u 2 x`,
+  #136). #78 MUST NOT wire the session to confirmed commands before #141 lands.
 
 ## How to exercise it
 
@@ -172,7 +193,9 @@ The test suite: `python3 -m pytest` from the repo root (CONTRIBUTING.md). Tests 
 a temporary HOME and guard scripts ahead of `sudo`; tests marked `sudo` or `vm` need
 the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). The gate's
 contract and its test vectors are in `docs/design/specs/policy-gate/v1.md`; the PTY
-protocol's in `docs/design/specs/pty-protocol/v1.md`. Once #16 lands, a stub model backend
+protocol's in `docs/design/specs/pty-protocol/v1.md`. The session tests
+(`tests/test_session.py`) need only bash (5.1 or later): they start a real bash on a PTY,
+with no VM and no sudo. Once #16 lands, a stub model backend
 returns fixed proposals, so the gate can be tested without a GPU.
 
 ## How we rate severity
@@ -191,7 +214,11 @@ password stays private.
   - a privileged or destructive step is classed lower;
   - a session change (alias, function, hook) goes undetected by the gate;
   - printed text forges a control-channel record, starts or ends passthrough, or spoofs
-    the confirm UI;
+    the confirm UI, including background output shown during a confirm;
+  - a confirmed non-privileged command gains root through a warm sudo cache without the
+    cached-credentials warning;
+  - a sensitive location is read without a confirm, or secret output reaches the command
+    model, the reader, the session log or history;
   - output writes the clipboard;
   - the command model or reader gets network access in the default config.
 - **Medium:**
@@ -199,6 +226,7 @@ password stays private.
   - secrets from the environment or command output reach the state block, the session
     log or `:context` despite the filter;
   - a destructive command is classed as merely mutating;
+  - a read-only content reader runs unconfirmed on a device, FIFO, socket or missing path;
   - the session doesn't enter degraded mode when its hooks were changed.
 - **Low:**
   - information leaks in error messages;

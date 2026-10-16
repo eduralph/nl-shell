@@ -43,6 +43,7 @@ in one folder in the repository, `targets/<id>/`, where `<id>` is the os-release
 | `target.toml` | id, display name, os-release match, shell (`bash`), package-owner query (e.g. `dpkg -S`), sudo implementation and version checked | REPL, gate |
 | `model.toml` | the model manifest (below) | installer, REPL |
 | `allowlist.toml` | the policy gate's read-only allowlist for this OS | gate |
+| `sensitive.toml` | sensitive locations and environment dumpers (ADR-0025) | gate, REPL |
 | `gate-vectors.toml` | the gate's conformance vectors for this OS's default session | gate tests |
 | `prompts/` | OS-specific prompt pieces (the default `prompts.yaml` layer) | REPL, training |
 | `harvest.toml` | what the pipeline harvests and the VM image it builds and filters in | training |
@@ -84,6 +85,20 @@ thresholds on its own eval split. `ubuntu-26.04` is the first and, for now, only
 bash-specific parts (proposal format, gate parser and rules, PTY hooks, history file, router
 builtins) stay as ADR-0002 and ADR-0013–0015 describe. Adding a shell is a later ADR; this
 one only keeps the shell a field of the target so the folder layout does not change then.
+
+When a second shell is added, a target becomes a pair of OS release and shell, and its
+parts split along that line:
+
+- **Per OS:** harvest config and VM image, allowlist semantics (which executables are
+  read-only), the package-owner query, the sudo implementation, and the base model.
+- **Per shell:** front-end hooks and control channel, the gate's parser and static rules,
+  the proposal dialect, the history file and the router's builtins.
+- **Model:** one base model per OS, with a small per-shell adapter loaded at run time
+  through llama.cpp's LoRA support. Shells close enough to share bash's dialect (zsh, for
+  example) may share its adapter if their eval split passes.
+
+Gate vectors and eval splits exist per pair. Until that ADR, the shell stays a field of
+`target.toml` with `bash` as the only value.
 
 ## Consequences
 
