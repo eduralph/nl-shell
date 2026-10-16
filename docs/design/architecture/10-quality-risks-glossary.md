@@ -68,7 +68,7 @@ lands, it is canonical and this table points to it.
 | **Control channel** | The pipe on fd 3 the PTY session writes start/done records and snapshots to; printed text can't reach it (ADR-0014) |
 | **Confirm** | The user's explicit yes (or edit) before a non-read-only command runs |
 | **Correction pair** | Training pair mapping an outdated habit to the 26.04 way |
-| **Degraded mode** | The session state nl-shell enters when the control channel misbehaves or its hooks were changed: everything needs a confirm until restart |
+| **Degraded mode** | The session state nl-shell enters when the control channel misbehaves or its hooks were changed: no further command is sent to the session until it is restarted |
 | **Execution filter** | Keeping a training pair only if its command ran correctly in a fresh 26.04 snapshot |
 | **GGUF** | llama.cpp's model file format; one format for every GPU vendor |
 | **Grounded generation** | The teacher writes training pairs from a tool's real man page, not from memory |

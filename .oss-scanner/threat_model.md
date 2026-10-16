@@ -178,6 +178,14 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
 - **Child processes inherit the control channel (fd 3).** Only code running as the user can
   use it, which is out of scope.
 - **The PTY session runs with the user's own rights.** There is no sandbox around the shell.
+- **The session core claims only a closed list (interim, until #141).**
+  `src/nl_shell/session.py` claims only what pty-protocol v1 §1.3 lists: a command that ran is never reported as
+  "nothing ran" for the listed cases; a confirmed change to `PROMPT_COMMAND`, `PS0`, or the
+  attributes of `PS1`/`PS2` degrades at that command's snapshot (its code may still run once
+  after it), and one to a plain `PS1`/`PS2` is overwritten. Nothing else is claimed until #141
+  (tamper checks) and #145 (review of what else can evade the hooks) land. `run()` without
+  a timeout can wait forever on a terminal read on an fd other than 0 (`read -u 2 x`,
+  #136). #78 MUST NOT wire the session to confirmed commands before #141 lands.
 
 ## How to exercise it
 
@@ -185,7 +193,9 @@ The test suite: `python3 -m pytest` from the repo root (CONTRIBUTING.md). Tests 
 a temporary HOME and guard scripts ahead of `sudo`; tests marked `sudo` or `vm` need
 the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). The gate's
 contract and its test vectors are in `docs/design/specs/policy-gate/v1.md`; the PTY
-protocol's in `docs/design/specs/pty-protocol/v1.md`. Once #16 lands, a stub model backend
+protocol's in `docs/design/specs/pty-protocol/v1.md`. The session tests
+(`tests/test_session.py`) need only bash (5.1 or later): they start a real bash on a PTY,
+with no VM and no sudo. Once #16 lands, a stub model backend
 returns fixed proposals, so the gate can be tested without a GPU.
 
 ## How we rate severity

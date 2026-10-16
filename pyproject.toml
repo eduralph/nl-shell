@@ -12,6 +12,7 @@ authors = [{ name = "Eduard Ralph", email = "eduard@ralphovi.net" }]
 requires-python = ">=3.12"
 dependencies = [
     "prompt_toolkit>=3.0",
+    "ptyprocess>=0.7",
 ]
 
 [project.optional-dependencies]
