@@ -126,7 +126,8 @@ Trusted:
   the reader, never logged, never retrieved as history (ADR-0025).
 - **What the user confirms is exactly what runs**, byte for byte: bracketed paste, no
   history expansion (ADR-0014). The confirm UI renders from the parsed command with hidden
-  characters escaped; proposals with bidi or control characters are rejected (#74).
+  characters escaped (#74); proposals with bidi or control characters are rejected by
+  the proposal parser (M0.8, #143).
 - **Completion and exit codes can't be forged by output** (control channel, ADR-0014).
 - **Output rendering is filtered everywhere**: the mirrored PTY output, `:context` and
   `:history` must not let printed text write the clipboard (OSC 52) or spoof nl-shell's
@@ -195,8 +196,10 @@ the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). Th
 contract and its test vectors are in `docs/design/specs/policy-gate/v1.md`; the PTY
 protocol's in `docs/design/specs/pty-protocol/v1.md`. The session tests
 (`tests/test_session.py`) need only bash (5.1 or later): they start a real bash on a PTY,
-with no VM and no sudo. Once #16 lands, a stub model backend
-returns fixed proposals, so the gate can be tested without a GPU.
+with no VM and no sudo. The recording stub backend (`RecordingStub` in
+`src/nl_shell/backend.py`) returns fixed model responses and records every model input it
+was sent, so the prompts, the proposal parser and the REPL are tested without a model or a
+GPU (`tests/test_backend.py`), and the gate can be tested the same way.
 
 ## How we rate severity
 
