@@ -7,7 +7,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from nl_shell import __version__, config, os_release, targets
+from nl_shell import __version__, config, os_release, prompts, render, targets
 from nl_shell.input_modes import StatusLine
 from nl_shell.repl import Repl
 
@@ -41,27 +41,33 @@ def main(
         settings = config.load(config_file)
         named = args.target if args.target is not None else settings.target
         selection = targets.select(named, root, paths)
+        loaded = prompts.load(selection.target.folder, prompts.user_path())
     except targets.NoMatchingTarget as exc:
         names = ", ".join(exc.available) or "none"
-        print(
+        _error(
             f"nl-shell: {exc}.\n"
             f"Available targets: {names}.\n"
-            f"Name one with --target <id>, or with target = \"<id>\" in {config_file}.",
-            file=sys.stderr,
+            f"Name one with --target <id>, or with target = \"<id>\" in {config_file}."
         )
         return 1
-    except (config.ConfigError, targets.TargetError) as exc:
-        print(f"nl-shell: {exc}", file=sys.stderr)
+    except (config.ConfigError, targets.TargetError, prompts.PromptsError) as exc:
+        _error(f"nl-shell: {exc}")
         return 1
 
     if not selection.matches:
-        print(
+        _error(
             f"nl-shell: warning: target {selection.target.id} does not match this OS "
-            f"(detected: {selection.detected_id} {selection.detected_version_id}).",
-            file=sys.stderr,
+            f"(detected: {selection.detected_id} {selection.detected_version_id})."
         )
-    status_lines = tuple(_constant(line) for line in selection.status_lines())
-    return Repl.interactive(status_lines=status_lines).run()
+    lines = (*selection.status_lines(), *loaded.status_lines())
+    status_lines = tuple(_constant(line) for line in lines)
+    # No backend until #77 adds the model client: the REPL says so for every request.
+    return Repl.interactive(status_lines=status_lines, prompts=loaded).run()
+
+
+def _error(text: str) -> None:
+    """Print a start-up message. File text and paths in it are untrusted: escape them."""
+    print(render.escape(text), file=sys.stderr)
 
 
 def _constant(text: str) -> StatusLine:

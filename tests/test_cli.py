@@ -17,6 +17,12 @@ VERSION_ID = "1"
 implementation = "test-sudo"
 version = "1.0"
 """
+# The target's default prompts layer (#143): start-up refuses a target without one.
+PROMPTS_YAML = """\
+system: You propose one bash command.
+examples: []
+request_template: "{state}{request}"
+"""
 
 
 def test_version_flag(capsys):
@@ -30,6 +36,10 @@ def test_main_runs_the_interactive_repl(monkeypatch, tmp_path):
     root = tmp_path / "targets"
     (root / "testos-1").mkdir(parents=True)
     (root / "testos-1" / "target.toml").write_text(TARGET_TOML, encoding="utf-8")
+    (root / "testos-1" / "prompts").mkdir()
+    (root / "testos-1" / "prompts" / "prompts.yaml").write_text(
+        PROMPTS_YAML, encoding="utf-8"
+    )
     release = tmp_path / "os-release"
     release.write_text('ID=testos\nVERSION_ID="1"\n', encoding="utf-8")
     seen = {}
@@ -38,7 +48,7 @@ def test_main_runs_the_interactive_repl(monkeypatch, tmp_path):
         def run(self):
             return 0
 
-    def interactive(cls, status_lines=()):
+    def interactive(cls, status_lines=(), **_kwargs):
         seen["status_lines"] = [line() for line in status_lines]
         return FakeRepl()
 
@@ -47,4 +57,5 @@ def test_main_runs_the_interactive_repl(monkeypatch, tmp_path):
     assert seen["status_lines"] == [
         "target: testos-1 (Test OS 1)",
         "target matches this OS",
+        f"prompts: {root / 'testos-1' / 'prompts' / 'prompts.yaml'}",
     ]

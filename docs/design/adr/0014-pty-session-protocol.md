@@ -43,15 +43,16 @@ In summary:
      jobs) before each prompt.
 
    A `PROMPT_COMMAND` the user's `~/.bashrc` set (for example VTE's terminal integration)
-   is kept and run after nl-shell's hook. Each record carries a sequence number, advanced
+   is kept and run after nl-shell's done record and before its snapshot; nl-shell sets
+   `PS1` and `PS2` after the snapshot. Each record carries a sequence number, advanced
    in `PROMPT_COMMAND`: `PS0` runs its expansion in a subshell, so it can't advance a
    counter. Text a command prints goes to the PTY, never to
    fd 3, so it cannot forge a record. Redirecting to fd 3 is rejected by the gate
    (ADR-0013). A program that writes to its inherited fd 3 on purpose is code running as
    the user, outside the threat model.
 2. **Exit codes and completion come only from the control channel.** A missing,
-   out-of-order or malformed record puts the session into *degraded* mode: every command
-   needs a confirm, and nl-shell offers to restart the session.
+   out-of-order or malformed record puts the session into *degraded* mode: nl-shell sends
+   it no further command, says why, and offers to restart the session.
 3. **Byte-identical input.** The rcfile turns history expansion off (`set +H`). nl-shell
    sends the confirmed command as one bracketed paste followed by Enter, so readline
    inserts it literally: no completion, no expansion, newlines kept. The gate rejects
