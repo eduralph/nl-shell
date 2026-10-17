@@ -83,7 +83,8 @@ _V_VARS = (
 # - PS0 writes S for every line bash reads, with no guard variable. nl-shell's hook is the
 #   last PROMPT_COMMAND element (element 0 is empty, so `PROMPT_COMMAND=:` leaves the hook
 #   in place and changes H). `__nls_done` saves the status and the scratch variables
-#   (`__nls_pre`), prints the end-of-output marker, writes D and runs the user's
+#   (`__nls_pre`), prints pending job notices (`jobs -n`: bash 5.2 would print them after
+#   the marker), prints the end-of-output marker, writes D and runs the user's
 #   PROMPT_COMMAND elements; then `__nls_snap` sets PS1/PS2 (plain or exported ones only;
 #   others show in H), writes the snapshot and E, and sets PS1/PS2 again. Output is what lies
 #   between readline's end of the paste and that marker.
@@ -119,6 +120,7 @@ __nls_done() {
   __nls_st=$1
   \builtin shift
   __nls_ps=("$@")
+  \builtin jobs -n
   \builtin printf '\033]7700;@NLS_END@\007'
   __nls_seq=$((__nls_seq + 1))
   \builtin printf -v __nls_v ' %s' "${__nls_ps[@]}"
