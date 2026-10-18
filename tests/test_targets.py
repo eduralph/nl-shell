@@ -52,6 +52,13 @@ implementation = "test-sudo"
 version = "1.0"
 """
 
+# Every target folder carries its default prompts layer (#143); start-up refuses one without.
+PROMPTS_YAML = """\
+system: You propose one bash command.
+examples: []
+request_template: "{state}{request}"
+"""
+
 UBUNTU_RELEASE = 'NAME="Ubuntu"\nID=ubuntu\nVERSION_ID="26.04"\n'
 DEBIAN_RELEASE = 'NAME="Debian GNU/Linux"\nID=debian\nID_LIKE=ubuntu\nVERSION_ID="13"\n'
 
@@ -89,6 +96,9 @@ class Fake:
 
     def add_target(self, folder, text):
         (self.root / folder).mkdir(exist_ok=True)
+        prompts = self.root / folder / "prompts"
+        prompts.mkdir(exist_ok=True)
+        (prompts / "prompts.yaml").write_text(PROMPTS_YAML, encoding="utf-8")
         path = self.root / folder / "target.toml"
         if text is not None:
             path.write_text(text, encoding="utf-8")
@@ -141,9 +151,9 @@ def start(fake, monkeypatch, capsys):
             selections.append(selection)
             return selection
 
-        def interactive(cls, status_lines=()):
+        def interactive(cls, status_lines=(), **kwargs):
             started.append(True)
-            return Repl(scripted(*lines), out, status_lines)
+            return Repl(scripted(*lines), out, status_lines, **kwargs)
 
         monkeypatch.setattr(targets, "select", spy)
         monkeypatch.setattr(Repl, "interactive", classmethod(interactive))
@@ -157,6 +167,10 @@ def start(fake, monkeypatch, capsys):
         return Run(code, out.getvalue(), err, bool(started), selection)
 
     return run
+
+
+def prompts_line(fake, target_id):
+    return f"prompts: {fake.root / target_id / 'prompts' / 'prompts.yaml'}"
 
 
 def no_match_message(detected, config_file, available="testos-1, ubuntu-26.04"):
@@ -180,6 +194,7 @@ def test_exact_match_is_active_and_matching(fake, start):
         f"{VERSION_LINE}\n"
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target matches this OS\n"
+        f"{prompts_line(fake, 'ubuntu-26.04')}\n"
     )
     sel = run.selection
     assert sel.target.id == "ubuntu-26.04"
@@ -236,6 +251,7 @@ def test_named_target_on_another_os_starts_marked_not_matching(fake, start):
         f"{VERSION_LINE}\n"
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target does not match this OS (detected: debian 13)\n"
+        f"{prompts_line(fake, 'ubuntu-26.04')}\n"
     )
     sel = run.selection
     assert sel.target.id == "ubuntu-26.04"
@@ -544,6 +560,7 @@ def test_unreadable_etc_os_release_with_named_target_starts_not_matching(fake, s
         f"{VERSION_LINE}\n"
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target does not match this OS (detected: unknown unknown)\n"
+        f"{prompts_line(fake, 'ubuntu-26.04')}\n"
     )
     sel = run.selection
     assert sel.matches is False
@@ -609,7 +626,7 @@ def test_target_folder_without_allowlist_loads(fake):
     from nl_shell import targets
 
     folder = fake.root / "testos-1"
-    assert sorted(p.name for p in folder.iterdir()) == ["target.toml"]
+    assert sorted(p.name for p in folder.iterdir()) == ["prompts", "target.toml"]
     target = targets.load("testos-1", fake.root)
     assert target.id == "testos-1"
     assert target.folder == folder
@@ -685,11 +702,13 @@ def test_status_lines_do_not_leak_between_runs(fake, start):
         f"{VERSION_LINE}\n"
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target matches this OS\n"
+        f"{prompts_line(fake, 'ubuntu-26.04')}\n"
     )
     assert second.out == (
         f"{VERSION_LINE}\n"
         "target: testos-1 (Test OS 1)\n"
         "target does not match this OS (detected: ubuntu 26.04)\n"
+        f"{prompts_line(fake, 'testos-1')}\n"
     )
     # And a Repl built afterwards, with no target, shows neither.
     out = io.StringIO()

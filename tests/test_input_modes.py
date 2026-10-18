@@ -10,20 +10,19 @@ COMMAND = (
     "That looks like a shell command, but nl-shell can't run anything yet: "
     "the bash session arrives in M0.2."
 )
+# A plain Repl has no model backend (the interactive default until #77): natural
+# language and `@request` get the same reply.
 NATURAL_LANGUAGE = (
-    "That looks like a natural-language request, but nl-shell can't answer it yet: "
-    "the model backend arrives in M0.8."
+    "No model backend is configured, so nl-shell can't answer this yet: "
+    "the model client arrives with #77."
 )
 ASK = (
     "That is an ask-mode question (?), but nl-shell can't answer it yet: "
     "ask mode arrives in M0.8."
 )
-PROPOSE = (
-    "That is a one-command request (@), but nl-shell can't propose a command yet: "
-    "command proposals arrive in M0.8."
-)
+PROPOSE = NATURAL_LANGUAGE
 AGENT = "@@ is reserved for the agent loop, which arrives with M0.6b (#76)."
-CONTEXT = ":context is not available yet: it arrives with M0.8 (#16)."
+CONTEXT = "No model input yet: :context shows the model input of the last request."
 HISTORY = ":history is not available yet: it arrives with M0.9 (#17)."
 # `:status` prints a block whose FIRST line is `nl-shell <version>`. A session adds its own
 # lines after it (#92, #16, #77), so the table checks only that first line, not the block.
@@ -49,7 +48,6 @@ REPLY_NAMES = {
     COMMAND: "command",
     NATURAL_LANGUAGE: "natural-language",
     ASK: "ask",
-    PROPOSE: "propose",
     AGENT: "agent-reserved",
     CONTEXT: "context",
     HISTORY: "history",
@@ -105,7 +103,8 @@ def fake_path(tmp_path, monkeypatch):
 
 
 def test_replies_are_distinct():
-    assert len(REPLY_NAMES) == 15
+    # PROPOSE is NATURAL_LANGUAGE (no backend), so 14 distinct replies.
+    assert len(REPLY_NAMES) == 14
 
 
 @pytest.mark.parametrize(
@@ -115,7 +114,7 @@ def test_replies_are_distinct():
         ("\\frobnicate the widgets", COMMAND),
         ("\\ls -la", COMMAND),
         ("?why did that fail", ASK),
-        ("@show disk usage", PROPOSE),
+        ("@show disk usage", PROPOSE),  # the no-backend reply
         # `@@` is checked before `@`: this must not reach the `@` route as "@clean ...".
         ("@@clean up my downloads", AGENT),
         (":context", CONTEXT),

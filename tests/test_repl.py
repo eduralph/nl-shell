@@ -10,9 +10,10 @@ COMMAND = (
     "That looks like a shell command, but nl-shell can't run anything yet: "
     "the bash session arrives in M0.2."
 )
+# A plain Repl has no model backend (the interactive default until #77).
 NATURAL_LANGUAGE = (
-    "That looks like a natural-language request, but nl-shell can't answer it yet: "
-    "the model backend arrives in M0.8."
+    "No model backend is configured, so nl-shell can't answer this yet: "
+    "the model client arrives with #77."
 )
 ROUTE_NAMES = {COMMAND: "command", NATURAL_LANGUAGE: "natural-language"}
 
