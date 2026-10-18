@@ -179,14 +179,39 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
 - **Child processes inherit the control channel (fd 3).** Only code running as the user can
   use it, which is out of scope.
 - **The PTY session runs with the user's own rights.** There is no sandbox around the shell.
-- **The session core claims only a closed list (interim, until #141).**
-  `src/nl_shell/session.py` claims only what pty-protocol v1 §1.3 lists: a command that ran is never reported as
-  "nothing ran" for the listed cases; a confirmed change to `PROMPT_COMMAND`, `PS0`, or the
-  attributes of `PS1`/`PS2` degrades at that command's snapshot (its code may still run once
-  after it), and one to a plain `PS1`/`PS2` is overwritten. Nothing else is claimed until #141
-  (tamper checks) and #145 (review of what else can evade the hooks) land. `run()` without
-  a timeout can wait forever on a terminal read on an fd other than 0 (`read -u 2 x`,
-  #136). #78 MUST NOT wire the session to confirmed commands before #141 lands.
+- **The session core claims only the closed list in pty-protocol v1 §1.3.** These are
+  the routes around it that are known and not closed:
+  - **Loadable builtins and shadowing functions.** A builtin loaded with `enable -f` and
+    a function named `builtin`, `command`, `local` or `return` are left to the gate: such
+    commands are class `session-altering` (ADR-0013 §2; ADR-0024).
+  - **`~/.bashrc` or `~/.inputrc` edited by a command** takes effect at the next session
+    restart, which takes a new baseline from it (#134).
+  - **`ptrace_scope = 0`** lets any process of the user attach to bash and change it
+    without a trace in the snapshot (#137).
+  - **The prompt rule's limits** (#136): a builtin that reads the terminal for over 1 s
+    (`read -t 2`, `select`) degrades the session even when it would finish; a terminal
+    read on an fd other than 0 (`read -u 2 x`) is not seen, so `run()` without a timeout
+    can wait forever.
+  - **The outside checks and the prompt rule are Linux-only** (`/proc`, #138).
+  - **Fake fd-3 records.** A command (or a process it starts) can write records to fd 3
+    itself (#135).
+  - **A background job changing the terminal settings** between the last pre-paste
+    reading and the write of the paste is not seen (#147).
+  - **A process in another session reading the PTY** (started with `setsid`, with the
+    slave open) can take paste bytes (#148).
+  - **The shell's own value of a terminal field readline sets itself while it reads a
+    line** (R: ISIG, ICANON, ECHO, FLUSHO, ICRNL, INLCR, ISTRIP, INPCK, VMIN, VTIME,
+    VLNEXT, VDISCARD) can be changed by a confirmed command, a trap, or a background job
+    while a command runs, and is not checked. This cannot change the bytes of a paste, but
+    the commands after it run with the change and the session does not degrade. In
+    particular with ISIG off, `Session.interrupt()` (writes `\x03`) no longer interrupts a
+    command, so a `run()` without a timeout can hang on a runaway command while the
+    session stays healthy (#149).
+  - **A trap or `bind -x` binding set by `~/.bashrc`** is in the baseline, yet it can call
+    a function a confirmed command redefines, and run after the snapshot (#150).
+  - **Other evasions of the hooks** are under review (#145).
+
+  #78 MUST NOT wire the session to confirmed commands until each of #145, #147, #148, #149 and #150 is fixed or a human has accepted it in writing as a known risk for #78.
 
 ## How to exercise it
 
