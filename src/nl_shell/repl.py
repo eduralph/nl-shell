@@ -36,6 +36,11 @@ NO_BACKEND = (
     "the model client arrives with #77."
 )
 NO_USABLE_PROPOSAL = "No usable proposal came back from the model."
+# The replies when the backend raises `BackendError`. Interim: ADR-0018 §7's "model
+# unavailable" state is deferred, and the issue that builds it owns changing these texts
+# and the tests that pin them (tests/test_teacher_client.py).
+SERVER_NOT_RUNNING = "The model server isn't running ({detail})."
+SERVER_UNUSABLE = "The model server could not be used: {reason}."
 NOTHING_RUNS_YET = (
     "Nothing runs yet: running a proposal arrives with the policy gate (#12, #78)."
 )
@@ -66,6 +71,15 @@ def show_proposal(result: object) -> str:
     return NO_USABLE_PROPOSAL
 
 
+def backend_failure(exc: Exception) -> str:
+    """The reply when the backend could not get an answer (``BackendError``)."""
+    from nl_shell.teacher_client import ServerNotRunning
+
+    if isinstance(exc, ServerNotRunning):
+        return SERVER_NOT_RUNNING.format(detail=exc)
+    return SERVER_UNUSABLE.format(reason=exc)
+
+
 class Repl:
     """One REPL session. ``read`` returns the next line or raises EOFError."""
 
@@ -85,7 +99,7 @@ class Repl:
         # This session's own `:status` lines, after the version line
         # (see the `StatusLine` comment in nl_shell.input_modes).
         self._status_lines = tuple(status_lines)
-        # No backend is the interactive default until #77 adds the model client.
+        # No backend is the interactive default until the CLI builds the model client.
         self._backend = backend
         self._prompts = prompts
         # The model input of the last request, for `:context`.
@@ -145,9 +159,14 @@ class Repl:
             return NO_BACKEND
         from nl_shell import prompts, proposal
 
+        from nl_shell.backend import BackendError
+
         messages = prompts.build(self._prompts, request)
         self._last_input = messages
-        raw = self._backend.complete(messages)
+        try:
+            raw = self._backend.complete(messages)
+        except BackendError as exc:
+            return backend_failure(exc)
         return show_proposal(proposal.parse(raw))
 
     def _model_input_text(self) -> str | None:
