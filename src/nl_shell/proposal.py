@@ -2,9 +2,11 @@
 
 ADR-0018 §3 and spec rule 5: a response that fails to parse, fails the schema or breaks
 rule 2 is rejected, never repaired. A ``command`` holding a hidden character
-(``nl_shell.render.is_hidden``) is rejected too, so the REPL never shows or runs text the
-user cannot see. ``SCHEMA`` is the spec's schema, kept here once: the parser reads its
-enums and lengths from it, and #77 sends the same object for constrained decoding.
+(``nl_shell.render.is_hidden``) or more than two combining marks in a row
+(``nl_shell.render.too_many_marks``) is rejected too, anywhere in it, quoted or not, so
+the REPL never shows or runs text the user cannot see. ``SCHEMA`` is the spec's schema,
+kept here once: the parser reads its enums and lengths from it, and #77 sends the same
+object for constrained decoding.
 """
 
 from __future__ import annotations
@@ -130,6 +132,8 @@ def _parse(raw: str) -> Proposal:
             raise _Reject(f"command length {len(command)} is out of range")
         if render.has_hidden(command):
             raise _Reject("command holds a hidden character")
+        if render.too_many_marks(command):
+            raise _Reject("command holds more than two combining marks in a row")
     # Rule 2.
     if kind == "command":
         if "command" not in doc or "risk" not in doc:
