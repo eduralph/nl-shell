@@ -6,9 +6,9 @@ when the line is also valid bash (``?x`` is a glob, ``\\ls`` is valid bash):
     prefix   mode                     today
     \\cmd     shell command            the command route (the router is skipped)
     ?q       ask mode                 placeholder reply (M0.8)
-    @req     one-command proposal     placeholder reply (M0.8)
+    @req     one-command proposal     the model's proposal, shown (nl_shell.repl)
     @@goal   agent loop               reserved reply; #76 owns the grammar (M0.6b)
-    :name    meta-command             :status works; :context (#16), :history (#17)
+    :name    meta-command             :status and :context work; :history (#17)
 
 This stays a unit of its own, apart from ``nl_shell.router``: the router is the
 plain-input heuristic the M3 classifier (#40) replaces, and prefixes are not heuristics.
@@ -83,8 +83,8 @@ StatusLine = Callable[[], str]
 # them to `reply`, and `reply` to `status`. So a line never leaks into another Repl or a
 # later run in the same process, and a Repl built with no lines shows only the version.
 # A later issue adds a line by adding its callable to the tuple `nl_shell.cli.main` builds
-# for the session, after the active-target lines (#16 prompt files loaded, #77 endpoint
-# and backend); nothing here changes.
+# for the session, after the active-target and loaded-prompt-file lines (#77 endpoint and
+# backend); nothing here changes.
 def version_line() -> str:
     return f"nl-shell {nl_shell.__version__}"
 
@@ -97,21 +97,27 @@ ASK_NOT_YET = (
     "That is an ask-mode question (?), but nl-shell can't answer it yet: "
     "ask mode arrives in M0.8."
 )
-PROPOSE_NOT_YET = (
-    "That is a one-command request (@), but nl-shell can't propose a command yet: "
-    "command proposals arrive in M0.8."
-)
 AGENT_RESERVED = "@@ is reserved for the agent loop, which arrives with M0.6b (#76)."
-CONTEXT_NOT_YET = ":context is not available yet: it arrives with M0.8 (#16)."
+NO_MODEL_INPUT_YET = (
+    "No model input yet: :context shows the model input of the last request."
+)
 HISTORY_NOT_YET = ":history is not available yet: it arrives with M0.9 (#17)."
 
+
+def context(model_input: str | None) -> str:
+    """``:context``: the last request's model input, in the text form
+    ``nl_shell.prompts.render_input`` makes (already escaped), or a fixed reply."""
+    return NO_MODEL_INPUT_YET if model_input is None else model_input
+
+
 # Meta-commands by exact, case-sensitive name. Each takes the session's `:status` lines
-# (only `:status` uses them). The exit commands (EXIT_NAMES) are handled by the REPL loop
+# (only `:status` uses them) and the `:context` text of the last model input, or None
+# (only `:context` uses it). The exit commands (EXIT_NAMES) are handled by the REPL loop
 # before dispatch (`is_exit`), so they are listed as known but not looked up here.
-META_COMMANDS: dict[str, Callable[[Sequence[StatusLine]], str]] = {
-    "context": lambda _status_lines: CONTEXT_NOT_YET,
-    "history": lambda _status_lines: HISTORY_NOT_YET,
-    "status": status,
+META_COMMANDS: dict[str, Callable[[Sequence[StatusLine], str | None], str]] = {
+    "context": lambda _status_lines, model_input: context(model_input),
+    "history": lambda _status_lines, _model_input: HISTORY_NOT_YET,
+    "status": lambda status_lines, _model_input: status(status_lines),
 }
 
 
@@ -130,16 +136,21 @@ USAGE = {
 
 REPLIES = {
     Mode.ASK: ASK_NOT_YET,
-    Mode.PROPOSE: PROPOSE_NOT_YET,
     Mode.AGENT: AGENT_RESERVED,
 }
 
 
-def reply(prefixed: Prefixed, status_lines: Sequence[StatusLine] = ()) -> str:
-    """The reply for a prefixed line in any mode but a non-empty ``\\`` command.
+def reply(
+    prefixed: Prefixed,
+    status_lines: Sequence[StatusLine] = (),
+    model_input: str | None = None,
+) -> str:
+    """The reply for a prefixed line in any mode but a non-empty ``\\`` or ``@`` line.
 
-    A ``\\`` command with a payload belongs to the command route, which the REPL owns.
-    ``status_lines`` are the session's own ``:status`` lines, after the version line.
+    A ``\\`` command or an ``@`` request with a payload belongs to the REPL, which owns the
+    command route and the model backend. ``status_lines`` are the session's own
+    ``:status`` lines, after the version line; ``model_input`` is the ``:context`` text of
+    the session's last model input, or None before any request.
     """
     mode, payload = prefixed
     if mode is Mode.META:
@@ -148,7 +159,7 @@ def reply(prefixed: Prefixed, status_lines: Sequence[StatusLine] = ()) -> str:
         command = META_COMMANDS.get(payload)
         if command is None:
             return f"Unknown meta-command :{payload}. Known: {known_meta_commands()}."
-        return command(status_lines)
+        return command(status_lines, model_input)
     if not payload:
         return USAGE[mode]
     return REPLIES[mode]
