@@ -187,6 +187,20 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
   with Cyrillic U+0441) are not rejected. Mixed-script words move to #12's parser-based
   policy gate; until then nl-shell does not catch them, and the user's own reading of the
   confirm prompt is the only check.
+- **The failure classifier's privilege check is text-only until #12's parse**
+  (`failure_classes`). It treats a command as privileged when a privilege program's name
+  appears anywhere, when the text holds `$(`, a backtick, `<(`, `>(`, `$'`, `$"` or a
+  backslash, when the first word of any command is not a plain name, or when a word names
+  a shell function (or an alias whose value is privileged). It does not see: (1) a
+  privilege program named through an expansion that sits behind a plain first word (for
+  example `timeout 5 ${X}sudo x`, `time -p sud${X}o x` or `bash -c "$CMD"`); (2) a script
+  or input fed to an interpreter (`./build.sh`, `sh x.sh`, `cat cmds | sh`); (3) a plain
+  name that `PATH` resolves to a privilege program (a symlink `~/bin/s` to sudo); (4) a
+  `trap` or a `PROMPT_COMMAND` hook set earlier in the session that runs a privilege
+  program; (5) a redirection that holds `&` or `|` in front of the command word (for
+  example `2>&1 sud${X}o x`, `<&0 sud${X}o x` or `>| out sud${X}o x`), because the check
+  cuts the text at `&` and `|` before it skips redirections. In those cases the failed
+  command may be offered a correction and its output sent to the reader. #12 closes this.
 - **Raw `\cmd` input is the user's own**: it goes through the gate and confirm (ADR-0013),
   but is never blocked for taint reasons.
 - **A user who confirms a destructive command gets it.** In scope: a confirm that shows
