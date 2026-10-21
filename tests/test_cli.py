@@ -53,9 +53,12 @@ def test_main_runs_the_interactive_repl(monkeypatch, tmp_path):
         return FakeRepl()
 
     monkeypatch.setattr(cli.Repl, "interactive", classmethod(interactive))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/nonexistent/nl-shell-test-run")
     assert cli.main([], targets_root=root, os_release_paths=[release]) == 0
     assert seen["status_lines"] == [
         "target: testos-1 (Test OS 1)",
         "target matches this OS",
         f"prompts: {root / 'testos-1' / 'prompts' / 'prompts.yaml'}",
+        "model endpoint: unix socket /nonexistent/nl-shell-test-run/nl-shell/model.sock",
+        "model backend: local model server (chat-completions over the socket)",
     ]

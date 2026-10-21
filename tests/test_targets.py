@@ -21,6 +21,12 @@ from nl_shell.repl import Repl
 
 REPO = Path(__file__).resolve().parents[1]
 VERSION_LINE = f"nl-shell {nl_shell.__version__}"
+# `start` pins XDG_RUNTIME_DIR so the model `:status` lines do not depend on the host.
+RUNTIME_DIR = "/nonexistent/nl-shell-test-run"
+MODEL_LINES = (
+    f"model endpoint: unix socket {RUNTIME_DIR}/nl-shell/model.sock\n"
+    "model backend: local model server (chat-completions over the socket)\n"
+)
 MISMATCH = "target does not match this OS"
 
 UBUNTU_2604 = """\
@@ -157,6 +163,7 @@ def start(fake, monkeypatch, capsys):
 
         monkeypatch.setattr(targets, "select", spy)
         monkeypatch.setattr(Repl, "interactive", classmethod(interactive))
+        monkeypatch.setenv("XDG_RUNTIME_DIR", RUNTIME_DIR)
         try:
             code = cli.main(argv, targets_root=fake.root, os_release_paths=fake.paths)
         finally:
@@ -195,6 +202,7 @@ def test_exact_match_is_active_and_matching(fake, start):
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target matches this OS\n"
         f"{prompts_line(fake, 'ubuntu-26.04')}\n"
+        f"{MODEL_LINES}"
     )
     sel = run.selection
     assert sel.target.id == "ubuntu-26.04"
@@ -252,6 +260,7 @@ def test_named_target_on_another_os_starts_marked_not_matching(fake, start):
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target does not match this OS (detected: debian 13)\n"
         f"{prompts_line(fake, 'ubuntu-26.04')}\n"
+        f"{MODEL_LINES}"
     )
     sel = run.selection
     assert sel.target.id == "ubuntu-26.04"
@@ -561,6 +570,7 @@ def test_unreadable_etc_os_release_with_named_target_starts_not_matching(fake, s
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target does not match this OS (detected: unknown unknown)\n"
         f"{prompts_line(fake, 'ubuntu-26.04')}\n"
+        f"{MODEL_LINES}"
     )
     sel = run.selection
     assert sel.matches is False
@@ -703,12 +713,14 @@ def test_status_lines_do_not_leak_between_runs(fake, start):
         "target: ubuntu-26.04 (Ubuntu 26.04 LTS)\n"
         "target matches this OS\n"
         f"{prompts_line(fake, 'ubuntu-26.04')}\n"
+        f"{MODEL_LINES}"
     )
     assert second.out == (
         f"{VERSION_LINE}\n"
         "target: testos-1 (Test OS 1)\n"
         "target does not match this OS (detected: ubuntu 26.04)\n"
         f"{prompts_line(fake, 'testos-1')}\n"
+        f"{MODEL_LINES}"
     )
     # And a Repl built afterwards, with no target, shows neither.
     out = io.StringIO()
