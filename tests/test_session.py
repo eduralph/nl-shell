@@ -442,6 +442,7 @@ def test_unreadable_proc_syscall_at_start_degrades(start_session, monkeypatch, t
     path = os.path.join(str(fake_proc), str(session.pid), "syscall")
     assert session.degraded
     assert path in session.degraded_reason
+    assert session.degraded_code == "missing-record"
     began = time.monotonic()
     _assert_refused_unsent(session, pty_writes, "echo 'abc")
     assert time.monotonic() - began < 5.0
@@ -472,6 +473,7 @@ def test_unreadable_proc_syscall_during_a_run_degrades(start_session, tmp_path):
     assert outcome.result is None  # never "ran" or "not run" with a healthy session
     path = os.path.join(str(fake_proc), str(session.pid), "syscall")
     assert path in session.degraded_reason
+    assert session.degraded_code == "missing-record"
 
 
 # ---- (f) snapshot fields, the baseline, H and V --
@@ -626,7 +628,11 @@ def test_hook_state_vars_cover_the_rcfile():
     variables = _rcfile_variables(rcfile)
     assert {"__nls_seq", "__nls_st", "__nls_v", "__nls_c"} <= variables  # the parser works
     stray = {name for name in variables if not name.startswith("__nls_")} - bash_owned
-    assert stray == set(), stray
+    assert stray == {"LC_ALL"}, stray
+    # LC_ALL is set once, in __nls_enc's subshell, so the shell's own value never changes.
+    enc = re.search(r"^__nls_enc\(\) \{\n  \(\n(.*?)\n  \)\n\}$", rcfile, re.M | re.S)
+    assert enc is not None and "LC_ALL=C" in enc.group(1)
+    assert rcfile.count("LC_ALL") == 1
     assert not re.search(r"\blocal\b", rcfile)
 
 
@@ -1486,6 +1492,44 @@ def test_bashrc_readonly_pinned_variable_starts_degraded(start_session, monkeypa
     assert session.degraded
     _assert_refused_unsent(session, pty_writes, "echo hello")
     assert name in session.degraded_reason
+
+
+@pytest.mark.parametrize(
+    "bashrc",
+    ["readonly() { :; }\n", "unset() { :; }\n", "alias readonly=: unset=:\n"],
+    ids=["readonly-function", "unset-function", "aliases"],
+)
+def test_bashrc_shadowing_the_pins_does_not_stop_them(start_session, tmp_path, bashrc):
+    _write_bashrc(bashrc)
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    assert "PS4: readonly variable" in _run(session, "PS4='$(touch MARK)'").text
+    assert "MAILCHECK: readonly variable" in _run(session, "MAILCHECK=0").text
+    assert _run(session, 'echo "${MAILCHECK-unset}"').text == "unset\n"
+    time.sleep(0.2)
+    assert not (tmp_path / "MARK").exists()
+
+
+def test_bashrc_readonly_lc_all_still_gives_a_working_session(start_session):
+    # __nls_enc's `declare LC_ALL=C` fails then; the records are still written.
+    _write_bashrc("readonly LC_ALL=C.UTF-8\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    assert _run(session, "echo one").text == "one\n"
+    assert _run(session, "echo two").text == "two\n"
+    assert not session.degraded, session.degraded_reason
+
+
+@pytest.mark.parametrize("name", ["readonly", "unset"])
+def test_bashrc_disabling_a_pin_builtin_starts_degraded(start_session, monkeypatch,
+                                                        tmp_path, name):
+    _write_bashrc(f"enable -n {name}\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert session.degraded
+    assert "not pinned" in session.degraded_reason
+    _assert_refused_unsent(session, pty_writes, "PS4='$(touch MARK)'; set -x",
+                           tmp_path / "MARK")
 
 
 # ---- (m, second half) and (p): readline settings from ~/.bashrc and after a command --

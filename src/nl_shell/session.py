@@ -122,6 +122,12 @@ _V_VARS = (
 # - only builtins and parameter expansion (no `PATH` lookup). Each `$( … )` is parsed
 #   again when it runs, so `__nls_snap` turns `expand_aliases` off first (back on after E
 #   if it was on) and PS0/PROMPT_COMMAND quote their command words (`\builtin`).
+# - `__nls_enc` escapes in a subshell with `LC_ALL=C`: H's key bindings list raw bytes
+#   0xa0-0xff, and in a UTF-8 locale bash 5.1 then takes ~0.15 s to replace H's newlines,
+#   at every prompt. The patterns are ASCII, which never occurs inside a UTF-8 multibyte
+#   character, so the bytes are the same. The subshell keeps LC_ALL out of the shell's own
+#   state; `declare` (not an assignment, which would end the subshell) only fails if
+#   ~/.bashrc made LC_ALL readonly, and the escaping is then just slower.
 # - H also holds the bash state that can make bash run code, or change how readline reads
 #   the pasted bytes, after the snapshot: every trap but EXIT (read at the top level of
 #   nl-shell's PROMPT_COMMAND element, because bash hides DEBUG/RETURN/ERR inside an
@@ -134,7 +140,10 @@ _V_VARS = (
 #   (unset and made readonly after ~/.bashrc, so bash never checks mail: the mail check runs
 #   after PROMPT_COMMAND, before readline, and expands MAILPATH messages; if ~/.bashrc
 #   already made either readonly, the rcfile defines `nl_shell_unpinned_<name>` and the session
-#   starts degraded), the disabled hook builtins, readline on/off and its mode, its
+#   starts degraded; the pins call `\builtin`, so a ~/.bashrc function or alias named
+#   readonly or unset cannot stop them, and the session also starts degraded unless the
+#   baseline H shows both pinned, as `enable -n readonly` or a function named `builtin`
+#   still could), the disabled hook builtins, readline on/off and its mode, its
 #   variables except history-size, the key bindings of the five keymaps, and history
 #   expansion. Every `$( … )` in the hooks keeps stderr, so a failing builtin never yields a
 #   baseline-matching empty value. If a hook function's first `\builtin set` fails (`set`
@@ -149,11 +158,11 @@ RCFILE = (
 set +H
 unset HISTFILE
 for __nls_c in PS4 MAILCHECK; do
-  __nls_v=$(declare -p "$__nls_c" 2>/dev/null); __nls_v=${__nls_v#declare -}
-  if [[ ${__nls_v%% *} == *r* ]]; then eval "nl_shell_unpinned_$__nls_c() { :; }"; fi
+  __nls_v=$(\builtin declare -p "$__nls_c" 2>/dev/null); __nls_v=${__nls_v#declare -}
+  if [[ ${__nls_v%% *} == *r* ]]; then \builtin eval "nl_shell_unpinned_$__nls_c() { :; }"; fi
 done
-readonly PS4
-unset MAILCHECK 2>/dev/null; readonly MAILCHECK
+\builtin readonly PS4
+\builtin unset MAILCHECK 2>/dev/null; \builtin readonly MAILCHECK
 bind 'set enable-bracketed-paste on' 2>/dev/null
 shopt -s promptvars
 __nls_ea=$(shopt -p expand_aliases); shopt -u expand_aliases
@@ -163,11 +172,14 @@ __nls_seq=-1 __nls_st=0 __nls_ps=() __nls_v= __nls_c= __nls_n=0 __nls_pre=
 PS0='$(\\builtin printf "S %s\\n" "$((__nls_seq + 1))" >&3)'
 __nls_ret() { \builtin return "$1"; }
 __nls_enc() {
-  __nls_v=$2
-  __nls_v=${__nls_v//'\'/'\\'}
-  __nls_v=${__nls_v//$'\n'/'\n'}
-  __nls_v=${__nls_v//$'\r'/'\r'}
-  \builtin printf '%s %s\n' "$1" "$__nls_v" >&3
+  (
+    \builtin declare LC_ALL=C 2>/dev/null || \builtin :
+    __nls_v=$2
+    __nls_v=${__nls_v//'\'/'\\'}
+    __nls_v=${__nls_v//$'\n'/'\n'}
+    __nls_v=${__nls_v//$'\r'/'\r'}
+    \builtin printf '%s %s\n' "$1" "$__nls_v" >&3
+  )
 }
 __nls_done() {
   \builtin set -- "$?" "${PIPESTATUS[@]}" || return
@@ -307,6 +319,15 @@ _FUNCTRACE_ON = "set -o functrace"
 # The rcfile defines `nl_shell_unpinned_<name>` when ~/.bashrc already made PS4 or MAILCHECK
 # readonly, so nl-shell could not pin it.
 _UNPINNED = "nl_shell_unpinned_"
+
+# The H lines that show PS4 and MAILCHECK pinned: PS4 readonly, MAILCHECK readonly and
+# unset. A ~/.bashrc that disables `readonly` or `unset`, or defines a function named
+# `builtin`, leaves them unpinned without making them readonly first, so the session checks
+# the result, not the attempt.
+_PINNED = {
+    "PS4": r'declare -\S*r\S* PS4(=.*)?',
+    "MAILCHECK": r"declare -\S*r\S* MAILCHECK",
+}
 
 _TERMIOS_FIELDS = ("iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc")
 
@@ -594,6 +615,11 @@ class Session:
             name[len(_UNPINNED) :] for name in baseline.functions if name.startswith(_UNPINNED)
         )
         ps_lines = [line for line in lines if re.match(r"declare -\S+ PS[12](=|$)", line)]
+        not_pinned = [
+            name
+            for name, pattern in _PINNED.items()
+            if not any(re.fullmatch(pattern, line) for line in lines)
+        ]
         if _FUNCTRACE_ON in lines:
             self._tracker.degrade(
                 "functrace is on after ~/.bashrc (set -T, or extdebug): a DEBUG trap set"
@@ -604,6 +630,13 @@ class Session:
                 f"{' and '.join(unpinned)} already readonly after ~/.bashrc, so nl-shell"
                 " could not pin it (PS4 runs code when bash traces its hooks; with"
                 " MAILCHECK set bash's mail check runs MAILPATH messages after the hooks)"
+            )
+        elif not_pinned:
+            self._tracker.degrade(
+                f"{' and '.join(not_pinned)} not pinned after ~/.bashrc (readonly or unset"
+                " disabled, or a function named builtin): PS4 runs code"
+                " when bash traces its hooks; with MAILCHECK set bash's mail check runs"
+                " MAILPATH messages after the hooks"
             )
         elif any(not re.match(r"declare -[-x] PS[12]=", line) for line in ps_lines):
             self._tracker.degrade(
@@ -740,7 +773,7 @@ class Session:
             try:
                 reading = self._reading_terminal()
             except _ProcUnreadable as exc:
-                self._tracker.degrade(str(exc))
+                self._tracker.degrade(str(exc), "missing-record")
                 continue
             if reading:
                 if waiting_since is None:
@@ -803,7 +836,7 @@ class Session:
                 if self._reading_terminal():
                     return True
             except _ProcUnreadable as exc:
-                self._tracker.degrade(str(exc))
+                self._tracker.degrade(str(exc), "missing-record")
                 return False
             if self._check_stopped():
                 return False
@@ -945,7 +978,7 @@ class Session:
                 if self._reading_terminal():
                     break
             except _ProcUnreadable as exc:
-                self._tracker.degrade(str(exc))
+                self._tracker.degrade(str(exc), "missing-record")
                 return
             if self._check_stopped():
                 return
