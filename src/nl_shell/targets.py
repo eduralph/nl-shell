@@ -30,6 +30,7 @@ TARGET_FILE = "target.toml"
 SUPPORTED_SHELLS = ("bash",)  # ADR-0023 "Shells later"
 UNKNOWN = "unknown"
 MISMATCH_REASON = "target does not match this OS"
+COMMAND_PROVIDER_FORMATS = ("sqlite",)  # [command_provider] format
 
 # A target id is a plain folder name: no separators, no `.` or `..`, nothing hidden.
 _PLAIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -62,6 +63,21 @@ class NoMatchingTarget(TargetError):
 
 
 @dataclass(frozen=True)
+class CommandProvider:
+    """``[command_provider]``: local data that names the package providing a command.
+
+    ``format`` is the kind of source (only ``sqlite``), ``path`` the absolute path of the
+    file, opened read-only and never fetched (ADR-0003), and ``query`` one SQL statement
+    with a single ``?`` for the command word that returns package names in its first
+    column.
+    """
+
+    format: str
+    path: str
+    query: str
+
+
+@dataclass(frozen=True)
 class Target:
     """One loaded ``target.toml``. ``fields`` is the whole parsed file, read-only."""
 
@@ -75,6 +91,8 @@ class Target:
     sudo_version: str
     folder: Path
     fields: Mapping[str, Any] = field(repr=False, compare=False)
+    # Optional: a target without it names no package for "command not found".
+    command_provider: CommandProvider | None = None
 
     def matches(self, release: Mapping[str, str]) -> bool:
         """True when os-release ``ID`` and ``VERSION_ID`` equal this target's, exactly."""
@@ -193,6 +211,26 @@ def _validate(doc: dict[str, Any], folder: Path, path: Path) -> Target:
         raise TargetError(
             f"{path}: `package_owner_query` must be a non-empty list of non-empty strings"
         )
+    # Optional, unlike [os_release] and [sudo]: absent means no provider.
+    provider = None
+    if "command_provider" in doc:
+        source = table("command_provider")
+        kind = string(source, "format", "command_provider.format")
+        if kind not in COMMAND_PROVIDER_FORMATS:
+            raise TargetError(
+                f"{path}: command_provider.format {kind!r} is not supported "
+                f"(supported: {', '.join(COMMAND_PROVIDER_FORMATS)})"
+            )
+        data_path = string(source, "path", "command_provider.path")
+        if not Path(data_path).is_absolute():
+            raise TargetError(f"{path}: `command_provider.path` must be an absolute path")
+        sql = string(source, "query", "command_provider.query")
+        if sql.count("?") != 1:
+            raise TargetError(
+                f"{path}: `command_provider.query` must have exactly one `?` "
+                "(the command word)"
+            )
+        provider = CommandProvider(format=kind, path=data_path, query=sql)
     return Target(
         id=target_id,
         display_name=display_name,
@@ -204,6 +242,7 @@ def _validate(doc: dict[str, Any], folder: Path, path: Path) -> Target:
         sudo_version=string(sudo, "version", "sudo.version"),
         folder=folder,
         fields=MappingProxyType(doc),
+        command_provider=provider,
     )
 
 
