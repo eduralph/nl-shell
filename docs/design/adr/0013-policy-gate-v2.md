@@ -70,7 +70,7 @@ We will classify every command with the procedure in
 
    Otherwise the command is at least `mutating`, and the confirm says why ("`du` is a
    function defined in this session"). If the snapshot is missing or nl-shell's hooks were
-   changed, the session is *degraded*: everything needs a confirm until the session is
+   changed, the session is *degraded*: no command is sent to it until the session is
    restarted.
 6. **Rejected outright** (cannot be confirmed, for proposals and typed input alike):
    - redirections to or from file descriptor 3 or higher (they would reach nl-shell's
