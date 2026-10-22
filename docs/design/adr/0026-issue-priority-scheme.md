@@ -71,6 +71,9 @@ triages; section 4 adds what an automated triager may and may not do.
 - **P2:** next milestone, or whenever it fits.
 - **P3:** backlog; may be closed if it sits for a long time.
 
+The labels are named `priority:P0` to `priority:P3`, the names Stemma, Wyrd and
+pdca-harness use for the same table.
+
 P1 and P2 line up roughly with Codex's review badges, so the meaning is the same whether a
 review finding or a bug report produced the issue.
 
@@ -90,7 +93,7 @@ review finding or a bug report produced the issue.
 When a bot triages, it does this on each new issue:
 
 1. Set type (`bug`, `enhancement`, `documentation`, or `research`), plus severity, reach,
-   area, and P0–P3.
+   area, and a `priority:*` label.
 2. Post a comment with one line of reasoning for each label, so the maintainer can check
    the call quickly.
 3. Assign by area from a fixed owner table. With one maintainer that is the maintainer, or
