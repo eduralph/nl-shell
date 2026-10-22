@@ -54,3 +54,4 @@ Proposed ADR names it, so that change can be found.
 | [0023](0023-os-targets.md) | OS targets: one folder per OS, models referenced by manifest | Proposed |
 | [0024](0024-pty-front-end-not-readline-or-fork.md) | nl-shell owns the session: a PTY front end, not a readline integration or a bash fork | Proposed |
 | [0025](0025-sensitive-paths.md) | Sensitive paths: reading credentials needs a confirm, and the output stays on screen | Proposed |
+| [0026](0026-issue-priority-scheme.md) | Issue priority: severity and reach set P0–P3, with safety overrides | Proposed |
