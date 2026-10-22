@@ -2,9 +2,13 @@
 
 A backend gets the model input (the ordered message list ``nl_shell.prompts.build``
 makes) and returns the response text, unparsed; the REPL parses it
-(``nl_shell.proposal``). #77 adds the HTTP client to the local model server. Until then
-the only backend is ``RecordingStub``, for tests (#13, #78): it returns the responses the
+(``nl_shell.proposal``). ``nl_shell.teacher_client`` is the HTTP client to the local model
+server; ``RecordingStub`` is the backend for tests (#13, #78): it returns the responses the
 test gives it, in order, and records every model input it was sent.
+
+A backend that cannot get an answer raises ``BackendError``; the REPL shows one fixed reply
+for it and keeps running. Its text is shown to the user, so a backend escapes any text
+that came from the server (``nl_shell.render.escape``) when it builds the error.
 """
 
 from __future__ import annotations
@@ -19,6 +23,10 @@ class Backend(Protocol):
     def complete(self, messages: Sequence[Message]) -> str:
         """The raw response text for one model input."""
         ...
+
+
+class BackendError(Exception):
+    """The backend could not get a model answer. The text says why."""
 
 
 class StubExhausted(Exception):
