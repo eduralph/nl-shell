@@ -442,6 +442,7 @@ def test_unreadable_proc_syscall_at_start_degrades(start_session, monkeypatch, t
     path = os.path.join(str(fake_proc), str(session.pid), "syscall")
     assert session.degraded
     assert path in session.degraded_reason
+    assert session.degraded_code == "missing-record"
     began = time.monotonic()
     _assert_refused_unsent(session, pty_writes, "echo 'abc")
     assert time.monotonic() - began < 5.0
@@ -472,6 +473,21 @@ def test_unreadable_proc_syscall_during_a_run_degrades(start_session, tmp_path):
     assert outcome.result is None  # never "ran" or "not run" with a healthy session
     path = os.path.join(str(fake_proc), str(session.pid), "syscall")
     assert path in session.degraded_reason
+    assert session.degraded_code == "missing-record"
+
+
+def test_no_prompt_before_a_paste_degrades_as_missing_record(start_session, monkeypatch):
+    session_mod = _session_module()
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert not session.degraded
+    monkeypatch.setattr(session_mod, "_SETTLE", 0.2)
+    monkeypatch.setattr(session, "_reading_terminal", lambda: False)  # never at a prompt
+    outcome = _try_run(session, "true")
+    assert isinstance(outcome, session_mod.SessionDegraded)
+    assert outcome.reason == "the shell did not return to its prompt"
+    assert outcome.code == session.degraded_code == "missing-record"
+    _assert_refused_unsent(session, pty_writes, "echo hello")
 
 
 # ---- (f) snapshot fields, the baseline, H and V --
@@ -626,7 +642,11 @@ def test_hook_state_vars_cover_the_rcfile():
     variables = _rcfile_variables(rcfile)
     assert {"__nls_seq", "__nls_st", "__nls_v", "__nls_c"} <= variables  # the parser works
     stray = {name for name in variables if not name.startswith("__nls_")} - bash_owned
-    assert stray == set(), stray
+    assert stray == {"LC_ALL"}, stray
+    # LC_ALL is set once, in __nls_enc's subshell, so the shell's own value never changes.
+    enc = re.search(r"^__nls_enc\(\) \{\n  \(\n(.*?)\n  \)\n\}$", rcfile, re.M | re.S)
+    assert enc is not None and "LC_ALL=C" in enc.group(1)
+    assert rcfile.count("LC_ALL") == 1
     assert not re.search(r"\blocal\b", rcfile)
 
 
@@ -756,8 +776,8 @@ def test_read_with_no_input_degrades(start_session, command):
          ("\x1e", "\n", "\\n", "\r")),
         ("alias odd_nls=$'a\\\\b\\x1e\\nc \\'q\\''", "$(alias -p)", "aliases",
          ("odd_nls", "\x1e", "\n")),
-        ("trap $'echo \"x\\\\y\"\\x1e\\n: z' USR1", "$(trap -p)", "traps",
-         ("USR1", "\x1e", "\\")),
+        ("trap $'echo \"x\\\\y\"\\x1e\\n: z' EXIT", "$(trap -p)", "traps",
+         ("EXIT", "\x1e", "\\")),
     ],
     ids=["path", "alias", "trap"],
 )
@@ -808,7 +828,12 @@ def test_fake_programs_cannot_change_the_snapshot(start_session, tmp_path, setup
 # ---- (m, first half) the user's ~/.bashrc --
 
 
-_NLS_HOOK = '\\__nls_done; \\__nls_snap "$(\\builtin trap -p)"'
+def _nls_hook() -> str:
+    """nl-shell's PROMPT_COMMAND element, as the rcfile in use sets it."""
+    head = "PROMPT_COMMAND=('' '"
+    line = next(line for line in _session_module().RCFILE.split("\n") if line.startswith(head))
+    assert line.endswith("')"), line
+    return line[len(head) : -len("')")]
 
 
 def _prompt_settings(hooks: str) -> tuple[str, str, list[str]]:
@@ -855,7 +880,7 @@ def test_bashrc_alias_and_prompt_command_run_before_the_snapshot(start_session):
     for snap in snapshots:
         ps1, ps2, elements = _prompt_settings(snap.hooks)
         assert (ps1, ps2) == ("\\$ ", "> "), snap.seq
-        assert elements[-1] == _NLS_HOOK, snap.seq
+        assert elements[-1] == _nls_hook(), snap.seq
         assert all(element == "" for element in elements[:-1]), elements
     assert not session.degraded
 
@@ -1000,3 +1025,714 @@ def test_captured_output_is_bounded_and_keeps_the_tail(start_session):
     assert len(result.output) <= 1000
     assert result.text.endswith("END_MARK\n")
     assert not _run(session, "echo small").output_truncated
+
+
+# ==== #141: tamper checks (new H rows, the outside checks, reason codes) ====
+#
+# "Marker" is a file the injected code would create; each test asserts it does NOT exist.
+# "Refused" is: run() raises SessionDegraded and the spied PTY write count stays zero.
+# Each test asserts the attack's outcome (degraded / refused / no marker) before the reason
+# code, so without the fix it fails on the attack, not on a missing code.
+
+# A key binding that makes Enter (which ends every paste, §5.1) type a command of its own.
+_BIND_ENTER = r"""bind '"\r": " ; touch MARK\n"'"""
+# The same `bind`, for use inside a single-quoted trap or function body.
+_BIND_ENTER_INNER = r'''bind "\"\\r\": \" ; touch MARK\\n\""'''
+
+
+def _assert_degrades_at_its_snapshot(session, command, code):
+    """``command`` degrades the session at its own snapshot (or its own E), with reason
+    ``code``; returns the SessionDegraded it raised."""
+    session_mod = _session_module()
+    outcome = _try_run(session, command)
+    assert isinstance(outcome, session_mod.SessionDegraded), (command, outcome)
+    assert outcome.result is not None, (command, session.degraded_reason)
+    assert outcome.result.seq == 1, command
+    assert session.degraded_code == code, (command, session.degraded_code,
+                                           session.degraded_reason)
+    assert outcome.code == code
+    return outcome
+
+
+def _refused_with_code(session, writes, command, code, marker=None):
+    """``command`` is refused (no PTY write) and the degrade reason code is ``code``."""
+    session_mod = _session_module()
+    writes.clear()
+    with pytest.raises(session_mod.SessionDegraded) as caught:
+        _run(session, command)
+    assert writes == []
+    if marker is not None:
+        time.sleep(0.2)
+        assert not marker.exists()
+    assert caught.value.code == code, (caught.value.code, caught.value.reason)
+    assert session.degraded_code == code
+
+
+# ---- (h) the rows now in H, and fds 0-2 (outside check) --
+
+
+_TABLE_A_IN_H = {
+    "debug-trap": "trap ':' DEBUG",
+    "return-trap": "trap ':' RETURN",
+    "usr1-trap": "trap ':' USR1",
+    "winch-trap": "trap ':' WINCH",
+    "err-trap": "trap ':' ERR",
+    "chld-trap": "trap ':' CHLD",  # runs each time a `$( … )` of the hooks ends
+    "functrace": "set -o functrace",
+    "errtrace": "set -o errtrace",
+    "extdebug": "shopt -s extdebug",
+    "histexpand": "set -H",
+    "xtrace": "set -x",
+    "vi-mode": "set -o vi",
+    "readline-off": "set +o emacs",
+    "bind-enter-macro": _BIND_ENTER,
+    "bind-x-enter": r"""bind -x '"\C-m": "touch MARK"'""",
+    "bind-paste-prefix": r"""bind '"\e[2": "touch MARK\n"'""",
+    "bind-meta-paste-start": r"""bind -m emacs-meta '"[200~": "touch MARK\n"'""",
+    "bracketed-paste-off": "bind 'set enable-bracketed-paste off'",
+    "convert-meta": "bind 'set convert-meta on'",
+}
+
+
+@pytest.mark.parametrize("change", sorted(_TABLE_A_IN_H))
+def test_table_a_rows_degrade_at_their_own_snapshot(start_session, monkeypatch, tmp_path,
+                                                    change):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    command = _TABLE_A_IN_H[change]
+    if change == "convert-meta" and "set convert-meta on" in session.baseline.hooks.split("\n"):
+        command = "bind 'set convert-meta off'"  # the locale already turned it on: flip it
+    assert not session.degraded
+    _assert_degrades_at_its_snapshot(session, command, "h-changed")
+    marker = tmp_path / "MARK"
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "command, code",
+    [("exec >/dev/null", "outside-check"), ("exec 2>/dev/null", "outside-check"),
+     ("exec </dev/null", None)],
+    ids=["stdout", "stderr", "stdin"],
+)
+def test_redirected_shell_fds_are_refused(start_session, monkeypatch, tmp_path, command,
+                                          code):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    marker = tmp_path / "MARK"
+    if code is not None:
+        _assert_degrades_at_its_snapshot(session, command, code)
+    else:
+        _try_run(session, command)  # bash may read EOF and exit first
+    _assert_refused_unsent(session, pty_writes, f"touch {marker}; echo hello", marker)
+
+
+# ---- (h2) code that runs synchronously after D, before readline --
+
+
+_H2_ATTACKS = {
+    "debug-trap-before-snap":
+        "trap 'if [[ $BASH_COMMAND == *__nls_snap* ]]; then trap - DEBUG; "
+        + _BIND_ENTER_INNER + "; fi' DEBUG",
+    "debug-trap-before-done":
+        "trap 'if [[ $BASH_COMMAND == *__nls_done* ]]; then trap - DEBUG; "
+        + _BIND_ENTER_INNER + "; fi' DEBUG",
+    # Fires inside __nls_snap after H is read (`__nls_enc V`): functrace itself is in H.
+    "functrace-after-h":
+        "set -o functrace; trap 'if [[ $BASH_COMMAND == *__nls_enc\\ V* ]]; then"
+        " trap - DEBUG; " + _BIND_ENTER_INNER + "; fi' DEBUG",
+}
+
+
+@pytest.mark.parametrize("attack", sorted(_H2_ATTACKS))
+def test_code_run_after_done_cannot_bind_enter_unseen(start_session, monkeypatch, tmp_path,
+                                                      attack):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    marker = tmp_path / "MARK"
+    _try_run(session, _H2_ATTACKS[attack])
+    assert session.degraded, "the next paste would be written with Enter bound to a macro"
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert session.degraded_code == "h-changed", session.degraded_reason
+
+
+def test_chld_trap_cannot_bind_enter_after_the_snapshot(start_session, monkeypatch,
+                                                         tmp_path):
+    # The hooks' own `$( … )` children fire a CHLD trap, also after H is read: from the
+    # fourth one on, this one binds Enter to a macro that would run `touch MARK`.
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    marker = tmp_path / "MARK"
+    attack = "__k=0; trap '((++__k >= 4)) && " + _BIND_ENTER_INNER + "' CHLD"
+    _assert_degrades_at_its_snapshot(session, attack, "h-changed")
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert not marker.exists()
+
+
+def test_redefined_user_prompt_function_cannot_bind_enter_unseen(start_session, monkeypatch,
+                                                                 tmp_path):
+    _write_bashrc("f() { :; }\nPROMPT_COMMAND=f\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    marker = tmp_path / "MARK"
+    _try_run(session, "f() { " + _BIND_ENTER_INNER + "; }")
+    assert session.degraded
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert session.degraded_code == "h-changed", session.degraded_reason
+
+
+# ---- (t) a signal trap, which runs while readline waits --
+
+
+def test_signal_trap_cannot_bind_enter_while_readline_waits(start_session, monkeypatch,
+                                                            tmp_path):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    marker = tmp_path / "MARK"
+    attack = "trap '" + _BIND_ENTER_INNER + "' USR1; (sleep 0.5; kill -USR1 $$) &"
+    outcome = _try_run(session, attack)
+    assert session.degraded, "the USR1 trap would bind Enter while readline waits"
+    time.sleep(1.5)  # the trap has run by now
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert session.degraded_code == "h-changed", session.degraded_reason
+    assert getattr(outcome, "code", None) == "h-changed", outcome
+
+
+# ---- (k) R changed while readline holds the terminal (part 2) --
+#
+# The shell's own values of R are not checked (#149, decision 10): readline forces them
+# while it reads a paste, so they cannot change its bytes. Only a change made while
+# readline holds the terminal is caught, by the pre-paste reading.
+
+
+def test_background_job_turning_signals_off_is_refused(start_session, monkeypatch):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    _run(session, "(trap '' TTOU; sleep 0.5; stty -isig) >/dev/null 2>&1 &")
+    time.sleep(1.5)  # the job turned ISIG off while readline holds the terminal
+    _refused_with_code(session, pty_writes, "echo hello", "outside-check")
+
+
+def test_v5_fd4_bypass_shape_is_refused(start_session, monkeypatch, tmp_path):
+    # v5's bypass took nl-shell's fd-4 go-ahead; there is no fd 4 now, and the job's
+    # `stty -isig` while readline holds the terminal shows in the pre-paste reading.
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    _run(session, "(trap '' TTOU; sleep 0.5; stty -isig) >/dev/null 2>&1 &")
+    time.sleep(1.5)
+    _refused_with_code(session, pty_writes, "stty -a > MARK2", "outside-check")
+    assert not (tmp_path / "MARK2").exists()
+    _refused_with_code(session, pty_writes, "echo hello", "outside-check")
+
+
+# ---- (j) the outside checks: terminal settings, TIOCSTI, a stopped shell --
+
+
+def test_changed_interrupt_character_is_refused(start_session, monkeypatch, tmp_path):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    _try_run(session, "stty intr '|'")
+    _refused_with_code(session, pty_writes, "true || touch MARK", "outside-check",
+                       tmp_path / "MARK")
+
+
+@pytest.mark.parametrize("setting", ["istrip", "icrnl", "inlcr", "intr '|'"])
+def test_background_job_changing_the_terminal_at_the_prompt_is_refused(start_session,
+                                                                       monkeypatch, setting):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    result = _run(session, f"(trap '' TTOU; sleep 0.5; stty {setting}) &")
+    assert result.ran and not session.degraded
+    time.sleep(1.5)  # the job changed the settings while readline holds the terminal
+    _refused_with_code(session, pty_writes, "echo hello", "outside-check")
+
+
+def test_character_size_change_cannot_strip_paste_bytes(start_session):
+    # Readline turns ISTRIP/INPCK off only with CS8 (or its meta flag): with CS7 a paste
+    # would lose its eighth bit. A Linux PTY keeps CSIZE at CS8 whatever `stty` asks (the
+    # kernel's pty_set_termios resets it), so `stty cs7 istrip` leaves only the shell's own
+    # ISTRIP (not checked, #149), which readline clears while it reads: the next paste's
+    # 8-bit bytes arrive intact. Any other CSIZE would differ from the first prompt's
+    # reading and be refused before the paste (part 2).
+    import termios
+
+    session, _ = start_session()
+    _try_run(session, "stty cs7 istrip")
+    assert session.degraded or (
+        _run(session, "printf '%s' 'é' | od -An -tx1").text.split() == ["c3", "a9"])
+    assert termios.tcgetattr(session._proc.fd)[2] & termios.CSIZE == termios.CS8
+
+
+@pytest.mark.parametrize("content", ["1\n", None], ids=["allowed", "missing"])
+def test_tiocsti_not_off_starts_degraded(start_session, monkeypatch, tmp_path, content):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    path = tmp_path / "legacy_tiocsti"
+    if content is not None:
+        path.write_text(content, encoding="ascii")
+    session, _ = start_session(tiocsti_path=str(path))
+    assert session.degraded
+    _refused_with_code(session, pty_writes, "echo hello", "tiocsti")
+    assert str(path) in session.degraded_reason
+
+
+def test_stopped_shell_degrades_instead_of_hanging(start_session):
+    session_mod = _session_module()
+    session, _ = start_session()
+    began = time.monotonic()
+    outcome = _run_default_timeout(session, "(sleep 0.3; kill -STOP $$) & sleep 2", limit=5.0)
+    assert time.monotonic() - began < 5.0
+    assert isinstance(outcome, session_mod.SessionDegraded), outcome
+    assert outcome.code == "stopped", outcome.reason
+    assert session.degraded_code == "stopped"
+
+
+# ---- (fa) false-alarm guards --
+
+
+def test_many_quick_commands_stay_healthy(start_session):
+    session, _ = start_session()
+    for _ in range(50):
+        assert _run(session, "true").status == 0
+    assert _run(session, "echo hello").text == "hello\n"
+    assert not session.degraded, session.degraded_reason
+
+
+def test_fd_check_at_e_waits_out_the_e_redirect(start_session, monkeypatch, tmp_path):
+    # bash writes E with `printf 'E\n' >&3`; under CPU load the reading at E can land
+    # before bash undoes that redirect, with fd 1 still the control pipe (round 6's false
+    # alarm). Replay that: the first fd reading after E goes through a proc_root whose
+    # fd/1 and fdinfo/1 are bash's real fd 3. A healthy session must stay healthy.
+    session_cls = _session_module().Session
+    session, _ = start_session()
+    pid = str(session.pid)
+    fake_root = tmp_path / "proc"
+    for sub in ("fd", "fdinfo"):
+        (fake_root / pid / sub).mkdir(parents=True)
+        for fd, real_fd in ((0, 0), (1, 3), (2, 2)):
+            os.symlink(f"/proc/{pid}/{sub}/{real_fd}", fake_root / pid / sub / str(fd))
+    state = {"armed": False, "e_seen": False, "replayed": 0}
+    real_read_control = session_cls._read_control
+    real_read_fds = session_cls._read_fds
+
+    def read_control(self):
+        records = real_read_control(self)
+        if state["armed"] and any(kind == "E" for kind, _ in records):
+            state["e_seen"] = True
+        return records
+
+    def read_fds(self):
+        if not (state["e_seen"] and state["replayed"] == 0):
+            return real_read_fds(self)
+        state["replayed"] += 1
+        saved, self.proc_root = self.proc_root, str(fake_root)
+        try:
+            return real_read_fds(self)
+        finally:
+            self.proc_root = saved
+
+    monkeypatch.setattr(session_cls, "_read_control", read_control)
+    monkeypatch.setattr(session_cls, "_read_fds", read_fds)
+    state["armed"] = True
+    result = _try_run(session, "echo hello")
+    assert state["replayed"] == 1, "the reading at E was never replayed"
+    assert not session.degraded, session.degraded_reason
+    assert result.text == "hello\n"
+    assert _run(session, "echo again").text == "again\n"
+
+
+# ---- (st) Python stalls must not degrade a healthy session --
+#
+# No check may depend on nl-shell being scheduled inside a window bash does not wait for
+# (round 7's D..E reading did: any stall longer than a few ms degraded the session).
+
+
+def _assert_stays_healthy_over_30_runs(session):
+    assert not session.degraded, session.degraded_reason
+    for _ in range(30):
+        assert _run(session, "true").status == 0
+    assert _run(session, "echo hello").text == "hello\n"
+    assert not session.degraded, session.degraded_reason
+
+
+def test_stall_after_each_pty_write_stays_healthy(start_session, monkeypatch):
+    session_mod = _session_module()
+    real_write_all = session_mod._write_all
+
+    def slow_write_all(fd, data):
+        real_write_all(fd, data)
+        time.sleep(0.05)
+
+    monkeypatch.setattr(session_mod, "_write_all", slow_write_all)
+    session, _ = start_session()
+    _assert_stays_healthy_over_30_runs(session)
+
+
+def test_stall_before_each_control_read_stays_healthy(start_session, monkeypatch):
+    session_cls = _session_module().Session
+    real_read_control = session_cls._read_control
+
+    def slow_read_control(self):
+        time.sleep(0.05)
+        return real_read_control(self)
+
+    monkeypatch.setattr(session_cls, "_read_control", slow_read_control)
+    session, _ = start_session()
+    _assert_stays_healthy_over_30_runs(session)
+
+
+def test_busy_python_thread_stays_healthy(start_session):
+    stop = threading.Event()
+
+    def spin() -> None:
+        while not stop.is_set():
+            pass
+
+    busy = threading.Thread(target=spin, daemon=True)
+    busy.start()  # before the session starts, so start-up runs under it too
+    try:
+        session, _ = start_session()
+        _assert_stays_healthy_over_30_runs(session)
+    finally:
+        stop.set()
+        busy.join(5.0)
+
+
+# ---- (rm) the reading of the shell's own R (round 7's part 3) is gone (#149) --
+
+
+def test_no_reading_of_the_shells_own_readline_fields():
+    path = os.path.join(os.path.dirname(__file__), os.pardir, "src", "nl_shell", "session.py")
+    with open(path, encoding="utf-8") as fh:
+        source = fh.read()
+    for name in ("_read_shell_r", "_check_shell_r", "_shell_r"):
+        assert name not in source, name
+
+
+def test_outside_checks_do_not_degrade_ordinary_commands(start_session):
+    session, _ = start_session()
+    assert _run(session, "printf '%s' 'é' | od -An -tx1").text.split() == ["c3", "a9"]
+    assert _run(session, "echo hello").text == "hello\n"
+    assert not session.degraded, session.degraded_reason
+
+
+def test_histsize_change_stays_healthy(start_session):
+    session, _ = start_session()
+    result = _run(session, "HISTSIZE=7")
+    assert result.ran and not session.degraded
+    assert _run(session, "echo hello").text == "hello\n"
+    assert not session.degraded, session.degraded_reason
+
+
+def test_bashrc_terminal_settings_are_the_baseline(start_session):
+    _write_bashrc("stty -ixon\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    for _ in range(3):
+        assert _run(session, "echo hello").text == "hello\n"
+    assert not session.degraded, session.degraded_reason
+
+
+# ---- (i) I3 reproducers from ~/.bashrc --
+
+
+def test_bashrc_prompt_command_binding_enter_on_its_second_run(start_session, monkeypatch,
+                                                               tmp_path):
+    _write_bashrc(
+        "__pc_runs=0\n"
+        "__pc() {\n"
+        "  __pc_runs=$((__pc_runs + 1))\n"
+        "  if [ \"$__pc_runs\" -eq 2 ]; then " + _BIND_ENTER + "; fi\n"
+        "}\n"
+        "PROMPT_COMMAND=__pc\n"
+    )
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert not session.degraded
+    marker = tmp_path / "MARK"
+    _assert_degrades_at_its_snapshot(session, "true", "h-changed")
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    _assert_refused_unsent(session, pty_writes, "echo again", marker)
+
+
+def test_bashrc_ps1_that_would_bind_enter_is_never_expanded(start_session, tmp_path):
+    _write_bashrc("__ps1_bind() { " + _BIND_ENTER + "; }\nPS1='${ __ps1_bind; }\\$ '\n")
+    marker = tmp_path / "MARK"
+    session, _ = start_session()
+    if session.degraded:
+        assert session.degraded_reason
+    else:
+        assert _run(session, "echo hello").text == "hello\n"
+        assert not session.degraded
+    time.sleep(0.2)
+    assert not marker.exists()
+
+
+def test_bashrc_readonly_ps1_starts_degraded(start_session, monkeypatch, tmp_path):
+    _write_bashrc("readonly PS1='$(" + _BIND_ENTER + ")\\$ '\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    marker = tmp_path / "MARK"
+    session, _ = start_session()
+    assert session.degraded
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert "PS1" in session.degraded_reason
+
+
+# ---- (mail) bash's mail check runs after PROMPT_COMMAND, before readline --
+
+
+def test_mail_check_is_off_for_good(start_session, monkeypatch, tmp_path):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    result = _run(session, "MAILCHECK=0")
+    assert result.status != 0 and "readonly" in result.text, result.text
+    mailbox = tmp_path / "m"
+    _run(session, f": > {mailbox}; MAILPATH='{mailbox}?$(stty -isig; touch MARK)'")
+    _run(session, f"sleep 1.1; echo x >> {mailbox}")  # new mail: a check would run it
+    pty_writes.clear()
+    settings = _run(session, "stty -a")
+    assert pty_writes, "the paste was written"
+    assert "isig" in settings.text.split() and "-isig" not in settings.text.split()
+    assert not session.degraded, session.degraded_reason
+    time.sleep(0.2)
+    assert not (tmp_path / "MARK").exists()
+
+
+@pytest.mark.parametrize("name", ["MAILCHECK", "PS4"])
+def test_bashrc_readonly_pinned_variable_starts_degraded(start_session, monkeypatch, name):
+    _write_bashrc(f"readonly {name}=5\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert session.degraded
+    _assert_refused_unsent(session, pty_writes, "echo hello")
+    assert name in session.degraded_reason
+
+
+@pytest.mark.parametrize(
+    "ps4",
+    ["'$(touch MARK)'", "'`touch MARK`'", r"'\044(touch MARK)'"],
+    ids=["dollar", "backtick", "octal-escape"],
+)
+def test_bashrc_readonly_ps4_with_eval_disabled_starts_degraded(start_session, monkeypatch,
+                                                                tmp_path, ps4):
+    # No sentinel without eval: only the check on PS4's value can catch this.
+    _write_bashrc(f"readonly PS4={ps4}\nenable -n eval\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert session.degraded
+    assert "PS4 holds" in session.degraded_reason
+    _assert_refused_unsent(session, pty_writes, "set -x", tmp_path / "MARK")
+
+
+def test_bashrc_plain_ps4_still_gives_a_working_session(start_session):
+    _write_bashrc("PS4='>> '\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    assert "PS4: readonly variable" in _run(session, "PS4='$(touch MARK)'").text
+
+
+def test_bashrc_function_named_like_a_sentinel_is_not_one(start_session):
+    _write_bashrc("nl_shell_unpinned_helper() { :; }\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+
+
+@pytest.mark.parametrize(
+    "bashrc",
+    ["readonly() { :; }\n", "unset() { :; }\n", "alias readonly=: unset=:\n"],
+    ids=["readonly-function", "unset-function", "aliases"],
+)
+def test_bashrc_shadowing_the_pins_does_not_stop_them(start_session, tmp_path, bashrc):
+    _write_bashrc(bashrc)
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    assert "PS4: readonly variable" in _run(session, "PS4='$(touch MARK)'").text
+    assert "MAILCHECK: readonly variable" in _run(session, "MAILCHECK=0").text
+    assert _run(session, 'echo "${MAILCHECK-unset}"').text == "unset\n"
+    time.sleep(0.2)
+    assert not (tmp_path / "MARK").exists()
+
+
+def test_bashrc_readonly_lc_all_still_gives_a_working_session(start_session):
+    # __nls_enc's `declare LC_ALL=C` fails then; the records are still written.
+    _write_bashrc("readonly LC_ALL=C.UTF-8\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    assert _run(session, "echo one").text == "one\n"
+    assert _run(session, "echo two").text == "two\n"
+    assert not session.degraded, session.degraded_reason
+
+
+@pytest.mark.parametrize("name", ["readonly", "unset"])
+def test_bashrc_disabling_a_pin_builtin_starts_degraded(start_session, monkeypatch,
+                                                        tmp_path, name):
+    _write_bashrc(f"enable -n {name}\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert session.degraded
+    assert "not pinned" in session.degraded_reason
+    _assert_refused_unsent(session, pty_writes, "PS4='$(touch MARK)'; set -x",
+                           tmp_path / "MARK")
+
+
+# ---- (m, second half) and (p): readline settings from ~/.bashrc and after a command --
+
+
+def test_bashrc_vi_mode_and_bracketed_paste_off_still_work(start_session):
+    _write_bashrc("bind 'set enable-bracketed-paste off'\nset -o vi\n")
+    session, records = start_session()
+    assert not session.degraded, session.degraded_reason
+    result = _run(session, "echo one\necho two")
+    assert result.text == "one\ntwo\n"
+    assert _pairs(records.for_command(1)) == (1, 1)
+    assert not session.degraded
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["bind 'set enable-bracketed-paste off'", "set +o emacs", "set -o vi"],
+    ids=["bracketed-paste-off", "readline-off", "vi-mode"],
+)
+def test_readline_change_never_gives_empty_healthy_output(start_session, change):
+    session_mod = _session_module()
+    session, _ = start_session()
+    _try_run(session, change)
+    after = _try_run(session, "echo hello")
+    if isinstance(after, session_mod.CommandResult) and not session.degraded:
+        assert after.output != b""
+        assert after.text == "hello\n"
+    else:
+        assert session.degraded
+
+
+# ---- (r) PS4 and xtrace --
+
+
+def test_xtrace_to_another_fd_with_ps4_code_never_runs_it(start_session, monkeypatch,
+                                                          tmp_path):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    marker = tmp_path / "MARK"
+    caught = _assert_degrades_at_its_snapshot(
+        session, "exec 9>/dev/null; BASH_XTRACEFD=9; PS4='$(echo x >> MARK)'; set -x",
+        "h-changed")
+    assert "PS4: readonly variable" in caught.result.text
+    _assert_refused_unsent(session, pty_writes, "echo hello", marker)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["PS4='$(touch MARK)'", "declare PS4='$(touch MARK)'", "printf -v PS4 '$(touch MARK)'"],
+    ids=["assign", "declare", "printf-v"],
+)
+def test_ps4_is_readonly(start_session, tmp_path, command):
+    session, _ = start_session()
+    result = _run(session, command)
+    assert result.status != 0
+    assert "readonly" in result.text
+    assert not session.degraded
+    assert _run(session, "echo hello").text == "hello\n"
+    time.sleep(0.2)
+    assert not (tmp_path / "MARK").exists()
+
+
+@pytest.mark.parametrize(
+    "command, changed, before",
+    [
+        ("set -x", "set -o xtrace", "set +o xtrace"),
+        ("set -o xtrace", "set -o xtrace", "set +o xtrace"),
+        ("exec 9>/dev/null; BASH_XTRACEFD=9", 'declare -- BASH_XTRACEFD="9"',
+         "BASH_XTRACEFD unset"),
+    ],
+    ids=["set-x", "set-o-xtrace", "xtracefd"],
+)
+def test_xtrace_settings_degrade_naming_their_h_line(start_session, monkeypatch, command,
+                                                     changed, before):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    baseline_lines = session.baseline.hooks.split("\n")
+    assert before in baseline_lines and changed not in baseline_lines
+    caught = _assert_degrades_at_its_snapshot(session, command, "h-changed")
+    lines = caught.result.snapshot.hooks.split("\n")
+    assert changed in lines and before not in lines
+    _assert_refused_unsent(session, pty_writes, "echo hello")
+
+
+# ---- (s) the hook builtins --
+
+
+def _hook_part(rcfile: str) -> str:
+    """The hook part of the rcfile: the bodies of the `__nls_*` functions, the PS0 line and
+    the PROMPT_COMMAND line (not the lines that run only while the rcfile loads)."""
+    lines = rcfile.split("\n")
+    first = next(i for i, line in enumerate(lines) if re.match(r"__nls_\w+\(\) \{", line))
+    last = next(i for i, line in enumerate(lines) if line == "\\builtin unset PROMPT_COMMAND")
+    part = [line for line in lines if line.startswith(("PS0=", "PROMPT_COMMAND=("))]
+    return "\n".join(part + lines[first:last])
+
+
+def test_hook_builtins_are_exactly_the_ones_the_hooks_call():
+    session_mod = _session_module()
+    part = _hook_part(session_mod.RCFILE)
+    assert "__nls_snap() {" in part and "\\builtin unset" not in part
+    called = set(re.findall(r"\\?builtin ([A-Za-z_]+|:)", part)) | {"builtin"}
+    assert set(session_mod.HOOK_BUILTINS) == called, (
+        set(session_mod.HOOK_BUILTINS) ^ called)
+    assert len(session_mod.HOOK_BUILTINS) == len(set(session_mod.HOOK_BUILTINS))
+
+
+# Disabling these stops the hooks writing records at all: every record is written by
+# `\builtin printf`, and both hook functions start with `\builtin set` and return if it
+# fails. The prompt rule then reports the missing done record.
+_NO_RECORD_BUILTINS = ("builtin", "printf", "set")
+
+
+def test_disabling_any_hook_builtin_degrades(start_session, monkeypatch):
+    session_mod = _session_module()
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    for name in session_mod.HOOK_BUILTINS:
+        session, _ = start_session()
+        began = time.monotonic()
+        outcome = _run_default_timeout(session, f"enable -n {name}", limit=5.0)
+        assert time.monotonic() - began < 5.0, name
+        assert isinstance(outcome, session_mod.SessionDegraded), (name, outcome)
+        _assert_refused_unsent(session, pty_writes, "echo hello")
+        if name in _NO_RECORD_BUILTINS:
+            expected = "missing-record"
+        else:
+            expected = "h-changed"
+        assert outcome.code == expected, (name, outcome.code, outcome.reason)
+        session.close()
+
+
+@pytest.mark.parametrize(
+    "setup, command",
+    [
+        ("trap '[[ $BASH_COMMAND == \"echo later\" ]] && : > MARK' DEBUG; enable -n trap",
+         "echo later"),
+        ("alias ls='touch MARK #'; enable -n alias", "ls"),
+    ],
+    ids=["hidden-debug-trap", "hidden-alias"],
+)
+def test_disabling_the_builtin_that_would_show_a_change_is_refused(start_session, monkeypatch,
+                                                                   tmp_path, setup, command):
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    marker = tmp_path / "MARK"
+    _try_run(session, setup)
+    assert session.degraded, "refused or degraded before the paste"
+    _assert_refused_unsent(session, pty_writes, command, marker)
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("setting", ["set -T", "shopt -s extdebug"], ids=["T", "extdebug"])
+def test_bashrc_functrace_starts_degraded(start_session, monkeypatch, setting):
+    # Under functrace a DEBUG trap is inherited by the substitution that reads the traps
+    # and could hide itself there, then run inside the hooks after H.
+    _write_bashrc(setting + "\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert session.degraded
+    _assert_refused_unsent(session, pty_writes, "echo hello")
+    assert "functrace" in session.degraded_reason

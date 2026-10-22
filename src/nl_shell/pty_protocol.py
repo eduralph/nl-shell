@@ -151,7 +151,8 @@ def check_command(command: str | bytes) -> bytes:
 class ProtocolTracker:
     """The §4 state machine. ``feed`` takes raw pipe bytes and returns the events they
     completed: ``("S", n)``, ``("D", Done)``, ``("E", Snapshot)``. Degraded mode is sticky
-    and keeps the first reason. Unknown record types are ignored (§Versioning)."""
+    and keeps the first reason and its code (``degraded_code``, spec §4.2: which check
+    fired). Unknown record types are ignored (§Versioning)."""
 
     def __init__(self, on_record: Callable[[bytes], None] | None = None):
         self.phase = Phase.BASELINE
@@ -161,6 +162,7 @@ class ProtocolTracker:
         self.done: Done | None = None
         self.started = False  # an `S` came for the command in flight
         self.degraded_reason: str | None = None
+        self.degraded_code: str | None = None
         self._on_record = on_record
         self._buf = bytearray()
         self._fields: dict[str, str] = {}
@@ -169,10 +171,11 @@ class ProtocolTracker:
     def degraded(self) -> bool:
         return self.phase is Phase.DEGRADED
 
-    def degrade(self, reason: str) -> None:
+    def degrade(self, reason: str, code: str = "other") -> None:
         if self.phase is not Phase.DEGRADED:
             self.phase = Phase.DEGRADED
             self.degraded_reason = reason
+            self.degraded_code = code
 
     def command_sent(self) -> None:
         if self.phase is not Phase.IDLE:
@@ -270,7 +273,7 @@ class ProtocolTracker:
         fields, self._fields = self._fields, {}
         missing = [t for t in SNAPSHOT_TYPES if t not in fields]
         if missing:
-            self.degrade(f"snapshot is missing record(s) {', '.join(missing)}")
+            self.degrade(f"snapshot is missing record(s) {', '.join(missing)}", "missing-record")
             return None
         text = {t: decode_field(v) for t, v in fields.items() if t != "J"}
         snapshot = Snapshot(
@@ -295,7 +298,8 @@ class ProtocolTracker:
             self.degrade(
                 "nl-shell's hooks changed (PROMPT_COMMAND, PS0, PS1/PS2, TERM, promptvars,"
                 " the hook functions, their state variables or the saved user hook):"
-                " the snapshot's H differs from the baseline"
+                " the snapshot's H differs from the baseline",
+                "h-changed",
             )
             return None
         self.seq = snapshot.seq
