@@ -384,6 +384,8 @@ class TeacherClient:
             while not done.wait(_wait_for(exchange.deadline - time.monotonic())):
                 if time.monotonic() >= exchange.deadline:
                     raise exchange.expired()
+            if time.monotonic() >= exchange.deadline:
+                raise exchange.expired()  # done, but only after the deadline had passed
             finished = True
         finally:
             if not finished:
@@ -403,9 +405,9 @@ class TeacherClient:
         if self.endpoint.kind == "unix" and isinstance(
             exc, (FileNotFoundError, ConnectionRefusedError)
         ):
-            return ServerNotRunning(f"no answer at {_quote(str(self.endpoint.address))}")
+            return ServerNotRunning(f"no answer at {_excerpt(str(self.endpoint.address))}")
         if isinstance(exc, ConnectionRefusedError):
-            return ServerNotRunning(f"no answer at {_quote(str(self.endpoint.address))}")
+            return ServerNotRunning(f"no answer at {_excerpt(str(self.endpoint.address))}")
         if isinstance(exc, ssl.SSLError):
             return TransportError(f"TLS failed: {_describe(exc)}")
         return TransportError(_describe(exc))
@@ -472,18 +474,20 @@ class TeacherClient:
     ) -> bytes:
         """At most ``cap`` bytes of the body; over it, an error (``strict``) or a cut."""
         data = bytearray()
-        while True:
+        # Strict reads one byte past the cap to tell "at the cap" from "over it"; a cut
+        # stops at the cap, so a server that holds the connection open cannot stall it.
+        limit = cap + 1 if strict else cap
+        while len(data) < limit:
             exchange.arm()
-            chunk = response.read1(min(_READ_CHUNK, cap + 1 - len(data)))
+            chunk = response.read1(min(_READ_CHUNK, limit - len(data)))
             if not chunk:
                 return bytes(data)
             data += chunk
-            if len(data) > cap:
-                if strict:
-                    raise ResponseTooLarge(
-                        f"the response is over the {self.max_response_bytes}-byte limit"
-                    )
-                return bytes(data[:cap])
+        if strict:
+            raise ResponseTooLarge(
+                f"the response is over the {self.max_response_bytes}-byte limit"
+            )
+        return bytes(data)
 
 
 def _message_content(body: bytes) -> str:

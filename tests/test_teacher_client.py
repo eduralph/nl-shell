@@ -386,6 +386,23 @@ def test_a_body_at_the_cap_is_read(serve):
     assert client(fake.url, cap=len(body)).complete(messages()) == VALID
 
 
+def test_an_error_body_at_the_excerpt_cap_does_not_wait_for_more(serve):
+    """No length, exactly the excerpt cap, then the connection stays open."""
+    from nl_shell import teacher_client
+
+    def script(out, fake):
+        out.write(b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n")
+        out.write(b"x" * (teacher_client.EXCERPT_CHARS * 4))
+        out.flush()
+        fake.stall(STALL_S)
+
+    fake = serve(script)
+    error, elapsed = fails(lambda: client(fake.url, timeout_s=STALL_S).complete(messages()))
+    assert isinstance(error, teacher_client.HttpStatusError)
+    assert "500" in str(error)
+    assert elapsed < BOUND_S, f"waited {elapsed:.2f} s for a byte past the cap"
+
+
 def _times_out(fake, **kwargs):
     from nl_shell import teacher_client
 
@@ -395,6 +412,25 @@ def _times_out(fake, **kwargs):
     assert isinstance(error, teacher_client.DeadlineExceeded)
     assert elapsed < BOUND_S, f"gave up after {elapsed:.2f} s"
     return error
+
+
+def test_an_answer_that_lands_after_the_deadline_is_refused(monkeypatch):
+    """The worker finishes, but the clock has passed the deadline by the time it does."""
+    from nl_shell import teacher_client
+
+    real_monotonic = time.monotonic
+    late = threading.Event()
+
+    def post_then_run_out_the_clock(self, messages, exchange):
+        late.set()
+        return VALID
+
+    monkeypatch.setattr(
+        time, "monotonic", lambda: real_monotonic() + (3600.0 if late.is_set() else 0.0)
+    )
+    monkeypatch.setattr(teacher_client.TeacherClient, "_post", post_then_run_out_the_clock)
+    error, _ = fails(lambda: client("http://127.0.0.1:9").complete(messages()))
+    assert isinstance(error, teacher_client.DeadlineExceeded)
 
 
 def test_a_server_that_never_answers(serve):
@@ -742,6 +778,18 @@ def test_repl_with_no_socket_says_the_server_is_not_running(loaded_prompts):
         out = run_repl(backend, loaded_prompts, "show disk usage", "list files")
         line = f"The model server isn't running (no answer at {path})."
         assert out == f"{line}\n{line}\n"
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_a_socket_path_with_a_newline_stays_on_one_line(loaded_prompts):
+    directory = tempfile.mkdtemp(prefix="nls-")
+    try:
+        path = os.path.join(directory, "missing\nnl> \tfake.sock")
+        out = run_repl(client(path, kind="unix"), loaded_prompts, "show disk usage")
+        assert out.count("\n") == 1 and "\t" not in out
+        assert out.startswith("The model server isn't running (no answer at ")
+        assert not any(line.startswith("nl>") for line in out.splitlines())
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
