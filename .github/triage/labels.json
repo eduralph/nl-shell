@@ -1,0 +1,35 @@
+{
+  "_comment": "Labels for issue priority triage (ADR-0026). The apply job creates any that are missing; it never edits or deletes an existing label. Names, colours and descriptions match the labels already in the repository. Owners map an area to the GitHub login assigned when an issue has no assignee; \"*\" is the fallback.",
+  "severity": {
+    "sev:critical": {"color": "5c0000", "description": "Unapproved command runs, privilege escalation, data loss, or a secret leaks"},
+    "sev:major": {"color": "8b2c2c", "description": "Safety check bypassed or silently off, session ends, or core feature broken with no workaround"},
+    "sev:minor": {"color": "c9a0a0", "description": "Wrong behaviour with a workaround, or a visible degradation"},
+    "sev:trivial": {"color": "ede0e0", "description": "Cosmetic, wording, docs, or a test-only gap"}
+  },
+  "reach": {
+    "reach:common": {"color": "1d4ed8", "description": "Normal use triggers it"},
+    "reach:edge": {"color": "7aa2e8", "description": "Needs an unusual setup, input or timing"},
+    "reach:adversarial": {"color": "312e81", "description": "Only triggers when someone sets it up on purpose"}
+  },
+  "area": {
+    "area:session": {"color": "0e8a16", "description": "Persistent bash session (session.py, pty_protocol.py)"},
+    "area:terminal": {"color": "0e8a16", "description": "Terminal ownership and the output mirror"},
+    "area:teacher-client": {"color": "0e8a16", "description": "Teacher endpoint client"},
+    "area:targets": {"color": "0e8a16", "description": "OS targets and their data (incl. the command provider)"},
+    "area:repl": {"color": "0e8a16", "description": "REPL loop and user interaction"},
+    "area:docs": {"color": "0e8a16", "description": "ADRs, specs, threat model and other docs"},
+    "area:tests": {"color": "0e8a16", "description": "Test suite only"}
+  },
+  "priority": {
+    "priority:P0": {"color": "b60205", "description": "Drop other work, fix now, block the release (ADR-0026)"},
+    "priority:P1": {"color": "d93f0b", "description": "Goes on the current milestone (ADR-0026)"},
+    "priority:P2": {"color": "fbca04", "description": "Next milestone, or whenever it fits (ADR-0026)"},
+    "priority:P3": {"color": "c2e0c6", "description": "Backlog (ADR-0026)"}
+  },
+  "other": {
+    "needs-triage": {"color": "e4e669", "description": "Severity or reach could not be placed; says what is missing"}
+  },
+  "owners": {
+    "*": "eduralph"
+  }
+}
