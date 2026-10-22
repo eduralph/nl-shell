@@ -98,7 +98,12 @@ Trusted:
 - dpkg-owned man pages and an allowlist of `--help` outputs harvested in the reference VM,
   and the vendored tldr snapshot (local-reference, ADR-0016);
 - nl-shell's own config files in the user's home directory, except that a model endpoint
-  in them is refused without `--dev-teacher` (ADR-0020).
+  in them is refused without `--dev-teacher` (ADR-0020);
+- the target's command-provider data, `/var/lib/command-not-found/commands.db` on the
+  ubuntu-26.04 target (`[command_provider]` in its `target.toml`): root-owned,
+  package-managed, opened read-only and never fetched (ADR-0003), and not writable by an
+  attacker. The package names read from it are still filtered to the Debian package-name
+  rule, because they end up in text shown to the user.
 
 ## What must hold
 

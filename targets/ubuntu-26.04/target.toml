@@ -10,6 +10,14 @@
 #                        no `ID_LIKE` or nearby-version fallback
 #   [sudo]               the sudo implementation on this OS and the version nl-shell's sudo
 #                        handling was checked against (ADR-0015)
+#   [command_provider]   optional: local data naming the package that provides a command, for
+#                        the "command not found" suggestion. `format` is the kind of source
+#                        (only `sqlite`), `path` the absolute path of the file (opened
+#                        read-only, never fetched; ADR-0003), `query` one SQL statement with a
+#                        single `?` for the command word that returns package names in its
+#                        first column. Here: the command-not-found database, tables
+#                        commands(command, pkgID) and packages(pkgID, name). When the file is
+#                        absent or unreadable, no package is named.
 
 id = "ubuntu-26.04"
 display_name = "Ubuntu 26.04 LTS"
@@ -23,3 +31,10 @@ VERSION_ID = "26.04"
 [sudo]
 implementation = "sudo-rs"
 version = "0.2.13"
+
+[command_provider]
+format = "sqlite"
+path = "/var/lib/command-not-found/commands.db"
+query = """
+SELECT packages.name FROM commands JOIN packages ON packages.pkgID = commands.pkgID
+WHERE commands.command = ? ORDER BY packages.name"""
