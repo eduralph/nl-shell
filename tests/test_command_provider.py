@@ -298,6 +298,7 @@ def test_module_names_no_os_or_path(text):
 # Supplementary: the host's real data ----------------------------------------------------
 
 
+@pytest.mark.vm
 @pytest.mark.skipif(not HOST_DB.is_file(), reason=f"{HOST_DB} not present on this host")
 def test_real_lookup_finds_htop():
     from nl_shell import targets
