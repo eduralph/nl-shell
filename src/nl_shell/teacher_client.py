@@ -32,6 +32,10 @@ also bounds each socket wait by the time left and checks the deadline and the si
 (``max_response_bytes``) after every chunk it reads. Every wait value is clamped to
 ``MAX_WAIT_S``, so a huge ``timeout_s`` cannot overflow ``settimeout`` or a timer.
 
+Which endpoint a session uses is ``select_endpoint``'s choice (ADR-0003; ADR-0020 §3): the
+default socket ``$XDG_RUNTIME_DIR/nl-shell/model.sock`` unless ``--dev-teacher`` is given.
+It is a pure function: it opens no connection.
+
 Every failure is a ``nl_shell.backend.BackendError`` subclass whose text says why; any text
 that came from the server (a reason phrase, a body excerpt, an exception message such as
 ``http.client``'s ``BadStatusLine``, which holds the raw status line) is folded to one line,
@@ -43,8 +47,10 @@ own text to the screen.
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import math
+import os
 import socket
 import ssl
 import threading
@@ -68,6 +74,8 @@ SCHEMA_NAME = "proposal_v1"
 # How much of an error body goes into the error text.
 EXCERPT_CHARS = 200
 _READ_CHUNK = 16 * 1024
+SOCKET_DIR = "nl-shell"
+SOCKET_NAME = "model.sock"
 
 Kind = Literal["unix", "http", "https"]
 
@@ -175,6 +183,147 @@ def http_target(endpoint: Endpoint) -> HttpTarget:
         port=DEFAULT_PORTS[endpoint.kind] if port is None else port,
         path=base + CHAT_PATH,
     )
+
+
+def default_socket(runtime_dir: str | None) -> Endpoint:
+    """``$XDG_RUNTIME_DIR/nl-shell/model.sock``; no path if the directory is unusable.
+
+    Per the XDG Base Directory spec an unset, empty or relative ``XDG_RUNTIME_DIR`` is
+    ignored. There is no fallback guess (such as ``/run/user/<uid>``): with no path every
+    request fails as "isn't running".
+    """
+    if not runtime_dir or not os.path.isabs(runtime_dir):
+        return Endpoint("unix", None)
+    return Endpoint("unix", os.path.join(runtime_dir, SOCKET_DIR, SOCKET_NAME))
+
+
+def is_loopback(host: str) -> bool:
+    """``localhost``, ``127.0.0.0/8`` or ``::1``. No DNS lookup: any other name is not."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if address.version == 4:
+        return address in ipaddress.ip_network("127.0.0.0/8")
+    return address == ipaddress.IPv6Address("::1")
+
+
+def select_endpoint(
+    dev_teacher: str | bool | None, teacher_url: str | None, runtime_dir: str | None
+) -> tuple[Endpoint, list[str]]:
+    """The endpoint for this session and the messages to show at start-up.
+
+    ``dev_teacher`` is the ``--dev-teacher`` flag: ``None`` (not given), ``True`` (given
+    with no URL) or the URL given with it. ``teacher_url`` is ``config.toml``'s key and
+    ``runtime_dir`` is ``XDG_RUNTIME_DIR``. Without the flag the endpoint is always the
+    default socket, and a ``teacher_url`` is refused (ADR-0020 §3: any other endpoint,
+    loopback TCP included, needs the flag for the session). With it, the flag's URL wins
+    over ``teacher_url``. A URL that cannot be used is refused and the default socket used
+    instead; plain ``http://`` to a host that is not loopback gets a warning. Message
+    texts holding a URL escape it (``nl_shell.render.escape``). Nothing connects here.
+    """
+    default = default_socket(runtime_dir)
+    if dev_teacher is None or dev_teacher is False:
+        if teacher_url is None:
+            return default, []
+        return default, [
+            f"teacher_url {_shown(teacher_url)} in config.toml is refused without "
+            f"--dev-teacher; using the default socket ({_socket_text(default)})."
+        ]
+    url = dev_teacher if isinstance(dev_teacher, str) else teacher_url
+    if url is None:
+        return default, [
+            "--dev-teacher needs a URL, on the flag (--dev-teacher URL) or as teacher_url "
+            f"in config.toml; using the default socket ({_socket_text(default)})."
+        ]
+    scheme = _scheme(url)
+    if scheme is None:
+        problem: str | None = "it must be an http:// or https:// URL"
+    else:
+        problem = _url_problem(url)
+    if scheme is not None and problem is None:
+        endpoint = Endpoint(scheme, url)
+        try:
+            target = http_target(endpoint)
+        except BadEndpoint:
+            problem = "it cannot be used as a server address"
+    if scheme is None or problem is not None:
+        return default, [
+            f"the teacher URL {_shown(url)} is refused: {problem}; using the default "
+            f"socket ({_socket_text(default)})."
+        ]
+    if scheme == "http" and not is_loopback(target.host):
+        return endpoint, [
+            f"warning: the teacher URL {_shown(url)} is plain http:// to a host that is "
+            "not loopback, so requests and answers cross the network unencrypted. Use an "
+            "SSH tunnel to a loopback port, or https://."
+        ]
+    return endpoint, []
+
+
+def _shown(text: str) -> str:
+    """``text`` (a URL or a path) in single quotes, escaped once for a start-up message.
+
+    A hidden character shows as ``\\x..`` and a real backslash as ``\\\\``, so the two
+    cannot be confused; the quotes are literal, so a ``'`` in ``text`` changes nothing.
+    """
+    return "'" + render.escape(text, backslash=True) + "'"
+
+
+def _scheme(url: str) -> Literal["http", "https"] | None:
+    """``http`` or ``https`` if ``url`` starts with that scheme, even if it does not parse.
+
+    ``urlsplit`` raises on some URLs (``http://[::1``); the raw prefix still tells what
+    the user meant, so the refusal can give the real reason (``_url_problem``).
+    """
+    head, sep, _ = url.partition("://")
+    if not sep:
+        return None
+    scheme = head.lower()
+    if scheme == "http":
+        return "http"
+    if scheme == "https":
+        return "https"
+    return None
+
+
+def _url_problem(url: str) -> str | None:
+    """Why an ``http(s)://`` URL cannot be used, without repeating the URL; or ``None``.
+
+    The same checks as ``http_target``, worded for a start-up message that already shows
+    the URL once.
+    """
+    if not url.isascii() or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in url):
+        return "it holds a space, a control or a non-ASCII character"
+    try:
+        parts = urlsplit(url)
+        parts.port
+    except ValueError as exc:
+        return f"it does not parse ({_describe(exc)})"
+    if "@" in parts.netloc:
+        return "it holds user info"
+    if parts.query or parts.fragment or url.endswith(("?", "#")):
+        return "it holds a query or a fragment"
+    if not parts.hostname:
+        return "it names no host"
+    return None
+
+
+def _socket_text(endpoint: Endpoint) -> str:
+    if endpoint.address is None:
+        return "none: XDG_RUNTIME_DIR is not set to an absolute path"
+    return _shown(endpoint.address)
+
+
+def describe_endpoint(endpoint: Endpoint) -> str:
+    """The endpoint as ``:status`` shows it."""
+    if endpoint.kind == "unix":
+        if endpoint.address is None:
+            return "unix socket (none: XDG_RUNTIME_DIR is not set to an absolute path)"
+        return f"unix socket {endpoint.address}"
+    return str(endpoint.address)
 
 
 def _timeout(timeout_s: object) -> float:

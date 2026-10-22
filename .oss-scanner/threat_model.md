@@ -241,9 +241,29 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
     session stays healthy (#149).
   - **A trap or `bind -x` binding set by `~/.bashrc`** is in the baseline, yet it can call
     a function a confirmed command redefines, and run after the snapshot (#150).
+  - **Typed-ahead input can reach the next command in a narrow race** (#102). Keys typed
+    while a command runs are forwarded to it until its `D` record; the prompt hook then
+    drains what the command did not read, as its last step before `E`, until 50 ms pass
+    with nothing to read. A byte forwarded after bash wrote `D` but before nl-shell read
+    it, that lands after that last quiet window, reaches readline and is put in front of
+    the next paste. It needs nl-shell to lag more than the snapshot time plus 50 ms in
+    reading `D`. Closing it needs a back-channel (the hook waits on a second pipe until
+    nl-shell says forwarding stopped), which changes the start-up command.
+  - **The §6 mirror is not filtered yet** (#102). `run(…, terminal=…)` copies the
+    command's output to the real terminal byte for byte, so until the output rendering
+    filter lands, OSC 52 clipboard writes, title changes and terminal queries (`ESC [6n`,
+    `ESC [21t`) reach the real terminal. A query's answer is typed on the real terminal:
+    inside the §6 window it is forwarded to the command; after `D` it waits for whatever
+    reads the terminal next. This breaks "Output rendering is filtered everywhere" above.
+  - **A Ctrl-C typed just as a command ends degrades the session** (#102). Keys are
+    forwarded until nl-shell reads `D`, so a `\x03` typed in the few milliseconds after the
+    command ended reaches bash while its prompt hook runs. The SIGINT cuts the hook short,
+    and nl-shell sees records out of order or an `H` that differs from the baseline. The
+    session stays degraded until `restart()`. This is the race `Session.interrupt()`
+    already warns about, now open to any keypress; nl-shell alone cannot close it.
   - **Other evasions of the hooks** are under review (#145).
 
-  #78 MUST NOT wire the session to confirmed commands until each of #145, #147, #148, #149 and #150 is fixed or a human has accepted it in writing as a known risk for #78.
+  #78 MUST NOT wire the session to confirmed commands until each of #145, #147, #148, #149 and #150 is fixed or a human has accepted it in writing as a known risk for #78, and the output rendering filter (OSC 52, terminal queries) is applied to the §6 mirror.
 
 ## How to exercise it
 
@@ -253,7 +273,11 @@ the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). Th
 contract and its test vectors are in `docs/design/specs/policy-gate/v1.md`; the PTY
 protocol's in `docs/design/specs/pty-protocol/v1.md`. The session tests
 (`tests/test_session.py`) need only bash (5.1 or later): they start a real bash on a PTY,
-with no VM and no sudo. The recording stub backend (`RecordingStub` in
+with no VM and no sudo. The terminal-ownership tests (`tests/test_session_terminal.py`,
+spec §6) do the same with an `os.openpty()` pair as the user's terminal: they type on it
+(Ctrl-C, typed-ahead input, a 200 KB burst), resize it, and check that forwarded input is
+in no result, object or log record, that alternate-screen output is not captured, and that
+the terminal's settings are put back. The recording stub backend (`RecordingStub` in
 `src/nl_shell/backend.py`) returns fixed model responses and records every model input it
 was sent, so the prompts, the proposal parser and the REPL are tested without a model or a
 GPU (`tests/test_backend.py`), and the gate can be tested the same way.

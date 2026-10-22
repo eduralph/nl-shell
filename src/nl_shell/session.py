@@ -7,8 +7,9 @@ confirmed command (§5) and returns its status, ``PIPESTATUS``, output and snaps
 and completion come only from control-channel records, never from text on the PTY.
 
 A protocol violation puts the session in degraded mode (§4.2) until ``restart()``; while
-degraded nothing more is written to the PTY (§4.3). Terminal ownership (§6) and the REPL
-are later work (#102, #78). The prompt rule reads Linux ``/proc``.
+degraded nothing more is written to the PTY (§4.3). ``run(…, terminal=…)`` hands the
+real terminal to the command (§6, ``nl_shell.session_terminal``); the REPL is later work
+(#78). The prompt rule reads Linux ``/proc``.
 """
 
 from __future__ import annotations
@@ -92,6 +93,7 @@ HOOK_BUILTINS = (
     "eval",
     "jobs",
     "printf",
+    "read",
     "return",
     "set",
     "shift",
@@ -152,6 +154,10 @@ _V_VARS = (
 #   (a plain `return`: with `builtin` disabled `\builtin return` would fail too, and every
 #   later `\builtin` would run bash's command-not-found handler).
 # - the terminal settings are not bash state: nl-shell reads them from outside (spec §3).
+# - last before E, `__nls_snap` drains bash's stdin (`read -N`, non-canonical, so a partial
+#   line goes too) until 50 ms pass with nothing to read: input forwarded while the command
+#   ran (§6.1) that it did not read never reaches readline. Before E, never after: nl-shell
+#   may paste the next command as soon as it reads E.
 # - what this protects is the closed list in spec §1 and §3; nothing else is claimed (#145).
 RCFILE = (
     r"""# nl-shell session rcfile (pty-protocol v1 §1.3). Written by nl-shell; do not edit.
@@ -262,6 +268,11 @@ __nls_snap() {
   __nls_v=$(\builtin jobs -ps 2>&1) __nls_n=0
   if [[ -n $__nls_v ]]; then __nls_c=${__nls_v//[!$'\n']/}; __nls_n=$((${#__nls_c} + 1)); fi
   \builtin printf 'J %s\n' "$__nls_n" >&3
+  __nls_v=x
+  while [[ -t 0 && -n $__nls_v ]]; do
+    __nls_v=
+    \builtin read -r -s -N 4096 -t 0.05 __nls_v || \builtin :
+  done
   __nls_st=0 __nls_ps=() __nls_v= __nls_c= __nls_n=0 __nls_pre=
   \builtin printf 'E\n' >&3
   PS1='\$ ' PS2='> '
@@ -404,6 +415,11 @@ class CommandResult:
     snapshot: Snapshot
     variables_changed: bool  # the snapshot's V differs from the baseline's
     before: Snapshot  # the snapshot bash reported last before this command was pasted
+    # Real-terminal input reached the command (§6.1); output after it is not captured.
+    input_forwarded: bool = False
+    # Some of the output was captured but never reached the real terminal: the copy was
+    # dropped because the terminal did not take it (§6.2).
+    mirror_dropped: bool = False
 
     @property
     def text(self) -> str:
@@ -413,11 +429,14 @@ class CommandResult:
 
 class _Output:
     """The command's share of the PTY stream, bounded: after readline's end of the paste,
-    before the end marker. Later bytes are dropped. Markers may be split across reads."""
+    before the end marker. Later bytes are dropped. Markers may be split across reads.
+    With a ``sink`` (the terminal side of §6), that share is passed to ``sink.mirror`` as
+    it arrives and only what ``sink.capture`` returns is kept."""
 
-    def __init__(self, limit: int, end: bytes) -> None:
+    def __init__(self, limit: int, end: bytes, sink=None) -> None:
         self.limit = limit
         self.end = end
+        self.sink = sink
         self.data = bytearray()
         self.truncated = False
         self._accepted = False
@@ -461,12 +480,22 @@ class _Output:
         if pos >= 0:
             self._ended = True
             self._append(buf[:pos])
+            if self.sink is not None:
+                self._keep(self.sink.flush())
             return
-        keep = min(len(buf), len(self.end) - 1)
+        # Hold back only what may be the start of the marker, so a program's prompt that
+        # ends a read ("Name: ") reaches the real terminal at once.
+        keep = _marker_start(buf, self.end)
         self._append(buf[: len(buf) - keep])
         self._pending = buf[len(buf) - keep :]
 
     def _append(self, data: bytes) -> None:
+        if self.sink is not None and data:
+            self.sink.mirror(data)
+            data = self.sink.capture(data)
+        self._keep(data)
+
+    def _keep(self, data: bytes) -> None:
         self.data += data
         excess = len(self.data) - self.limit
         if excess > 0:
@@ -706,8 +735,15 @@ class Session:
         _write_all(self._proc.fd, b"\x03")
         return True
 
-    def run(self, command: str | bytes, *, timeout: float | None = None) -> CommandResult:
+    def run(
+        self, command: str | bytes, *, timeout: float | None = None, terminal=None
+    ) -> CommandResult:
         """Paste one confirmed command (§5) and wait for its done record and snapshot.
+
+        With ``terminal`` (a :class:`nl_shell.session_terminal.Terminal`), the real
+        terminal belongs to the command from the paste to its ``D`` record (§6): raw mode,
+        input forwarded, output mirrored, window size followed, and its settings put back
+        on every way out. Call it on the main thread for ``SIGWINCH`` to be followed.
 
         Raises :class:`CommandRefused` or :class:`SessionDegraded` (nothing written unless
         the command's own run degraded the session), or :class:`SessionTimeout`.
@@ -732,9 +768,16 @@ class Session:
         self._raise_if_degraded()
         before = self._tracker.snapshot
         assert before is not None
-        self._tracker.command_sent()
-        _write_all(self._proc.fd, PASTE_START + data + PASTE_END + b"\r")
-        return self._wait_for_result(timeout, before)
+        owner = None if terminal is None else terminal.own(self._proc.fd)
+        try:
+            if owner is not None:
+                owner.begin()
+            self._tracker.command_sent()
+            _write_all(self._proc.fd, PASTE_START + data + PASTE_END + b"\r")
+            return self._wait_for_result(timeout, before, owner)
+        finally:
+            if owner is not None:
+                owner.end()
 
     def _raise_if_degraded(self) -> None:
         if self._tracker.degraded:
@@ -743,40 +786,69 @@ class Session:
                 code=self._tracker.degraded_code or "other",
             )
 
-    def _wait_for_result(self, timeout: float | None, before: Snapshot) -> CommandResult:
+    def _wait_for_result(
+        self, timeout: float | None, before: Snapshot, owner=None
+    ) -> CommandResult:
+        """Wait for the command's records. ``owner`` (the terminal side of §6, from
+        ``nl_shell.session_terminal``) forwards real-terminal input until ``D``."""
         assert self._proc is not None and self._ctl is not None
         fd = self._proc.fd
         deadline = None if timeout is None else time.monotonic() + timeout
-        output = _Output(self.max_output, self._end)
+        output = _Output(self.max_output, self._end, owner)
         done: Done | None = None
         finished: Snapshot | None = None
         waiting_since: float | None = None  # bash has been reading the terminal since
 
+        def control() -> None:
+            nonlocal done, finished
+            for kind, value in self._read_control():
+                if kind == "D" and done is None:
+                    done = value  # type: ignore[assignment]
+                    if owner is not None:
+                        owner.stop()  # §6.1: forwarding ends at D
+                elif kind == "E":
+                    finished = value  # type: ignore[assignment]
+                    # Before the output: with fd 1 redirected the end marker never
+                    # reaches the terminal.
+                    if not self._tracker.degraded:
+                        self._check_fds_after_e()
+                    if self._tracker.started and not self._tracker.degraded:
+                        self._await_output_end(output)
+            if finished is not None:
+                self._drain_control()  # a record after E degrades, checked below
+
+        def forwarding_over() -> bool:
+            """Read the control channel now, before a write to the PTY: True from D on."""
+            if self._ctl_open and _select([self._ctl], 0):
+                control()
+            return (
+                done is not None
+                or finished is not None
+                or self._tracker.degraded
+                or not self._ctl_open
+            )
+
         while True:
             watch = [fd, self._ctl] if self._ctl_open else [fd]
-            ready = _select(watch, _POLL)
+            if owner is None:
+                ready = _select(watch, _POLL)
+                writable: list[int] = []
+            else:
+                ready, writable, _ = select.select(
+                    watch + owner.read_fds(), owner.write_fds(), [], _POLL
+                )
             if fd in ready:
                 output.feed(self._read_pty())
             if self._ctl_open and self._ctl in ready:
-                for kind, value in self._read_control():
-                    if kind == "D" and done is None:
-                        done = value  # type: ignore[assignment]
-                    elif kind == "E":
-                        finished = value  # type: ignore[assignment]
-                        # Before the output: with fd 1 redirected the end marker never
-                        # reaches the terminal.
-                        if not self._tracker.degraded:
-                            self._check_fds_after_e()
-                        if self._tracker.started and not self._tracker.degraded:
-                            self._await_output_end(output)
-                if finished is not None:
-                    self._drain_control()  # a record after E degrades, checked below
+                control()
+            if owner is not None and finished is None and not self._tracker.degraded:
+                owner.pump(ready, writable, forwarding_over)
 
             if self._tracker.degraded:
                 result = None
                 snapshot = self._tracker.snapshot
                 if done is not None and snapshot is not None and snapshot.seq == done.seq:
-                    result = self._result(done, snapshot, before, output)
+                    result = self._result(done, snapshot, before, output, owner)
                 raise SessionDegraded(
                     self._tracker.degraded_reason or "unknown",
                     result,
@@ -784,7 +856,7 @@ class Session:
                 )
             if finished is not None:
                 assert done is not None
-                return self._result(done, finished, before, output)
+                return self._result(done, finished, before, output, owner)
 
             now = time.monotonic()
             # §4.2 third trigger; until E, as a snapshot cut short also ends at a prompt.
@@ -831,10 +903,12 @@ class Session:
             )
 
     def _result(
-        self, done: Done, snapshot: Snapshot, before: Snapshot, output: _Output
+        self, done: Done, snapshot: Snapshot, before: Snapshot, output: _Output, owner=None
     ) -> CommandResult:
         baseline = self._tracker.baseline
         assert baseline is not None
+        if owner is not None:
+            owner.settle()  # the rest of the copy, so mirror_dropped is final
         return CommandResult(
             seq=done.seq,
             ran=self._tracker.started,
@@ -845,6 +919,8 @@ class Session:
             snapshot=snapshot,
             variables_changed=snapshot.variables != baseline.variables,
             before=before,
+            input_forwarded=owner is not None and owner.forwarded,
+            mirror_dropped=owner is not None and owner.mirror_dropped,
         )
 
     # ----- the prompt rule (§4.2, brief decision 7) --
@@ -1157,6 +1233,14 @@ def _pty_slave_rdev(master_fd: int) -> int | None:
         return os.stat(name).st_rdev
     except OSError:
         return None
+
+
+def _marker_start(buf: bytes, marker: bytes) -> int:
+    """The length of the longest end of ``buf`` that is a proper start of ``marker``."""
+    for size in range(min(len(buf), len(marker) - 1), 0, -1):
+        if marker.startswith(buf[-size:]):
+            return size
+    return 0
 
 
 def _cc_value(char: bytes | int) -> int:

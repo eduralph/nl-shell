@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from nl_shell import __version__, config, os_release, prompts, render, targets
+from nl_shell import (
+    __version__,
+    config,
+    os_release,
+    prompts,
+    render,
+    targets,
+    teacher_client,
+)
 from nl_shell.input_modes import StatusLine
 from nl_shell.repl import Repl
 
@@ -29,6 +38,17 @@ def main(
         "--target",
         metavar="ID",
         help="use this OS target even if it does not match this OS",
+    )
+    parser.add_argument(
+        "--dev-teacher",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="URL",
+        help=(
+            "for this session, use the model server at URL (or teacher_url in "
+            "config.toml) instead of the local socket; development only"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -59,10 +79,31 @@ def main(
             f"nl-shell: warning: target {selection.target.id} does not match this OS "
             f"(detected: {selection.detected_id} {selection.detected_version_id})."
         )
-    lines = (*selection.status_lines(), *loaded.status_lines())
+    # ADR-0003, ADR-0020 §3: the default socket unless --dev-teacher says otherwise.
+    endpoint, messages = teacher_client.select_endpoint(
+        args.dev_teacher, settings.teacher_url, os.environ.get("XDG_RUNTIME_DIR")
+    )
+    for message in messages:
+        _error(f"nl-shell: {message}")
+    client = teacher_client.TeacherClient(
+        endpoint, timeout_s=settings.model_timeout_s, model=settings.teacher_model
+    )
+    lines = (
+        *selection.status_lines(),
+        *loaded.status_lines(),
+        f"model endpoint: {teacher_client.describe_endpoint(endpoint)}",
+        f"model backend: {_backend_kind(endpoint)}",
+    )
     status_lines = tuple(_constant(line) for line in lines)
-    # No backend until #77 adds the model client: the REPL says so for every request.
-    return Repl.interactive(status_lines=status_lines, prompts=loaded).run()
+    return Repl.interactive(
+        status_lines=status_lines, backend=client, prompts=loaded
+    ).run()
+
+
+def _backend_kind(endpoint: teacher_client.Endpoint) -> str:
+    if endpoint.kind == "unix":
+        return "local model server (chat-completions over the socket)"
+    return "dev teacher (chat-completions over TCP, --dev-teacher)"
 
 
 def _error(text: str) -> None:
