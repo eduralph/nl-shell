@@ -104,10 +104,13 @@ permissions cannot draw the line we want: the `issues: write` permission that ad
 label needs also allows editing an issue's title and body, closing or locking it, and
 setting its milestone. So the model MUST NOT hold a token that can write anything:
 
-- The model runs with read access to the repository only. Its whole output is a verdict
-  in a fixed format: the labels, the assignee, and the comment text.
-- A separate step that is not a model, and that alone holds the issue-write token, reads
-  that verdict and applies it. It accepts only labels from the sets in this ADR (one of
+- The model runs in its own job whose token has read permissions only, and no secret
+  except the model's own credential. GitHub sets token permissions per job, not per step,
+  so a step in the same job as the writer could read the write token; the split MUST be
+  between jobs (or another boundary the platform enforces). The model's whole output is
+  a verdict in a fixed format: the labels, the assignee, and the comment text.
+- A second job that runs no model, and alone has the issue-write permission, receives
+  that verdict as data and applies it. It accepts only labels from the sets in this ADR (one of
   each kind, plus `needs-triage`), only an assignee from the owner table, and posts the
   comment as text. It never sets a milestone and never changes the title, body or state.
   A verdict that fails these checks is dropped and the issue gets `needs-triage`.
