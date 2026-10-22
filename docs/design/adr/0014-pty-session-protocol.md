@@ -60,9 +60,9 @@ In summary:
    paste can't be ended early.
 4. **Terminal ownership.**
    - At the prompt, prompt_toolkit owns the terminal.
-   - From the start record to the done record, nl-shell puts the terminal in raw mode and
-     **forwards every keystroke to the PTY without logging it**. It mirrors PTY output to
-     the screen and captures it under the capture rules.
+   - From sending the command to the done record, nl-shell puts the terminal in raw mode
+     and **forwards every keystroke to the PTY without logging it**. It mirrors PTY output
+     to the screen and captures it under the capture rules.
    - Window-size changes are applied to the PTY. Ctrl-C and Ctrl-Z travel as bytes, and
      the PTY's line discipline signals the foreground job as in any terminal. Stopped jobs
      appear in the snapshot.
