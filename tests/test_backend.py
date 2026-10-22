@@ -544,6 +544,7 @@ def test_status_lists_the_loaded_prompt_files(
     user = user_prompts_file()
     if with_user_file:
         user.write_text("system: Mine.\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/nonexistent/nl-shell-test-run")
     code, out, err, started, stub = start(
         monkeypatch, capsys, ":status", release=ubuntu_release
     )
@@ -556,6 +557,10 @@ def test_status_lists_the_loaded_prompt_files(
     ]
     if with_user_file:
         expected.append(f"prompts: {user}")
+    expected += [
+        "model endpoint: unix socket /nonexistent/nl-shell-test-run/nl-shell/model.sock",
+        "model backend: local model server (chat-completions over the socket)",
+    ]
     assert out.splitlines() == expected
 
 

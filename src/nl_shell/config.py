@@ -6,8 +6,11 @@ It lives at ``$XDG_CONFIG_HOME/nl-shell/config.toml``. Per the XDG Base Director
 ignored; a known key with the wrong type, or a file that is not valid TOML, is an error
 that names the file.
 
-Today the only key is ``target`` (ADR-0023 "Choosing the target"). Later issues (#77)
-add their keys to ``Config`` and ``load``.
+The keys are ``target`` (ADR-0023 "Choosing the target"), ``teacher_url`` and
+``teacher_model`` (the dev-teacher endpoint, used only with ``--dev-teacher``:
+ADR-0020 §3), and ``[model] timeout_s``, the model request deadline in seconds
+(ADR-0018 §7, ADR-0020 §5; default ``DEFAULT_MODEL_TIMEOUT_S``, at most
+``MAX_MODEL_TIMEOUT_S``).
 """
 
 from __future__ import annotations
@@ -19,6 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CONFIG_NAME = "config.toml"
+DEFAULT_MODEL_TIMEOUT_S = 10.0
+# The longest `[model] timeout_s` accepted: one hour. A longer deadline is a typo, not a
+# setting, and would leave the REPL waiting on a stuck server for as long.
+MAX_MODEL_TIMEOUT_S = 3600.0
 
 
 class ConfigError(Exception):
@@ -28,6 +35,9 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class Config:
     target: str | None = None
+    teacher_url: str | None = None
+    teacher_model: str | None = None
+    model_timeout_s: float = DEFAULT_MODEL_TIMEOUT_S
 
 
 def config_path(env: Mapping[str, str] | None = None) -> Path:
@@ -57,7 +67,36 @@ def load(path: Path | None = None) -> Config:
         raise ConfigError(f"{path}: not valid TOML: not valid UTF-8") from None
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: not valid TOML: {exc}") from None
-    target = doc.get("target")
-    if target is not None and not isinstance(target, str):
-        raise ConfigError(f"{path}: `target` must be a string")
-    return Config(target=target)
+    target = _string(doc, "target", path)
+    teacher_url = _string(doc, "teacher_url", path)
+    teacher_model = _string(doc, "teacher_model", path)
+    model = doc.get("model", {})
+    if not isinstance(model, dict):
+        raise ConfigError(f"{path}: `model` must be a table")
+    timeout_s = _timeout(model.get("timeout_s", DEFAULT_MODEL_TIMEOUT_S), path)
+    return Config(
+        target=target,
+        teacher_url=teacher_url,
+        teacher_model=teacher_model,
+        model_timeout_s=timeout_s,
+    )
+
+
+def _string(doc: Mapping[str, object], key: str, path: Path) -> str | None:
+    value = doc.get(key)
+    if value is not None and not isinstance(value, str):
+        raise ConfigError(f"{path}: `{key}` must be a string")
+    return value
+
+
+def _timeout(value: object, path: Path) -> float:
+    """``[model] timeout_s`` as a float in (0, MAX_MODEL_TIMEOUT_S]."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{path}: `model.timeout_s` must be a number of seconds")
+    # Compare before converting: TOML allows integers too large for a float.
+    if not (0 < value <= MAX_MODEL_TIMEOUT_S):  # NaN fails this too
+        raise ConfigError(
+            f"{path}: `model.timeout_s` must be more than 0 and at most "
+            f"{MAX_MODEL_TIMEOUT_S:g} seconds"
+        )
+    return float(value)
