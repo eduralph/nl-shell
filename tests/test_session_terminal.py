@@ -549,6 +549,24 @@ def test_a_terminal_that_stops_reading_does_not_stall_the_run(start_session, sta
         os.close(out_w)
 
 
+def test_output_to_a_closed_terminal_is_reported_dropped(start_session, stand_in):
+    """The real terminal's output goes away (EPIPE): the result must say the user saw
+    nothing, not that every byte was mirrored."""
+    terminal_mod = _terminal_module()
+    session = start_session()
+    screen = stand_in()
+    out_r, out_w = os.pipe()
+    os.close(out_r)  # every write to out_w now fails
+    try:
+        result = _run(session, "echo hello", terminal_mod.Terminal(screen.fd, out_w))
+        assert result.ran and result.status == 0
+        assert result.text == "hello\n"
+        assert result.mirror_dropped
+        assert not session.degraded
+    finally:
+        os.close(out_w)
+
+
 def test_the_terminal_fds_keep_their_flags_while_a_command_runs(start_session, stand_in):
     # O_NONBLOCK lives in the open file description that every copy of the terminal's fd
     # shares (the login shell, its background jobs). nl-shell must not set it there, not

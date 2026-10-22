@@ -387,6 +387,7 @@ class _Ownership:
             return False
         except OSError:
             self._output_open = False  # the real terminal went away
+            self.mirror_dropped = True  # this copy, and the rest of the run's, is lost
             self._drop_mirror()
             return False
         del self._mirror[:written]
