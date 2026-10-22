@@ -127,7 +127,17 @@ Trusted:
 - **What the user confirms is exactly what runs**, byte for byte: bracketed paste, no
   history expansion (ADR-0014). The confirm UI renders from the parsed command with hidden
   characters escaped (#74); proposals with bidi or control characters are rejected by
-  the proposal parser (M0.8, #143).
+  the proposal parser (M0.8, #143). The character policy (`nl_shell.render`, #144) takes
+  every Unicode property it uses from vendored Unicode 16.0.0 tables, not from Python's
+  `unicodedata`. Its hidden set is the characters those properties define (controls, Cf,
+  Co, Cn, Default_Ignorable_Code_Point, White_Space other than space/LF/TAB) plus a short
+  named list of known blank glyphs (U+2800, U+1D159, U+16FE4, U+13441, U+13442); a blank
+  glyph on neither is not caught. A `command` is rejected when it holds a hidden
+  character or more than two combining marks in a row (UTS #39 §3.1, §5.4), anywhere in
+  it, quoted or not; every display path escapes the hidden characters and the extra
+  marks. Rejecting quoted text too is stricter than the policy-gate spec's "outside
+  quotes" (policy-gate v1 §1, step 1); it is a superset of that MUST-reject rule, so the
+  spec is unchanged, and #12, which has the bash parser, may relax it.
 - **Completion and exit codes can't be forged by output** (control channel, ADR-0014).
 - **Output rendering is filtered everywhere**: the mirrored PTY output, `:context` and
   `:history` must not let printed text write the clipboard (OSC 52) or spoof nl-shell's
@@ -170,6 +180,13 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
 - **A model can be talked into proposing a bad command.** That is expected; the gate and
   the confirm exist because of it. In scope: a bad proposal getting past the gate, the
   confirm or clean-room re-derivation, or untrusted text not being labelled as such.
+- **Look-alike letters pass the proposal parser.** The character policy (#144) does no
+  confusable (skeleton) matching, no NFKC rule and no mixed-script check (UTS #39 §3.1
+  confusables, §5): look-alikes within one script or in Common (`ｃurl` fullwidth,
+  `𝐜url` mathematical bold, `ⅽurl` Roman numeral) and words that mix scripts (`сurl`,
+  with Cyrillic U+0441) are not rejected. Mixed-script words move to #12's parser-based
+  policy gate; until then nl-shell does not catch them, and the user's own reading of the
+  confirm prompt is the only check.
 - **Raw `\cmd` input is the user's own**: it goes through the gate and confirm (ADR-0013),
   but is never blocked for taint reasons.
 - **A user who confirms a destructive command gets it.** In scope: a confirm that shows
