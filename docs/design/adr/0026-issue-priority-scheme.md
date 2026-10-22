@@ -99,9 +99,18 @@ When a bot triages, it does this on each new issue:
    therefore stays on until the maintainer sets a milestone, as the Issue triage workflow
    already does.
 
-The bot reads issue text, which anyone can write, so it is untrusted input. The bot MUST
-only be able to read the repository, edit an issue's labels and assignees, and comment. It
-gets no write access to code and no secrets beyond its own token.
+The bot reads issue text, which anyone can write, so it is untrusted input. GitHub's
+permissions cannot draw the line we want: the `issues: write` permission that adding a
+label needs also allows editing an issue's title and body, closing or locking it, and
+setting its milestone. So the model MUST NOT hold a token that can write anything:
+
+- The model runs with read access to the repository only. Its whole output is a verdict
+  in a fixed format: the labels, the assignee, and the comment text.
+- A separate step that is not a model, and that alone holds the issue-write token, reads
+  that verdict and applies it. It accepts only labels from the sets in this ADR (one of
+  each kind, plus `needs-triage`), only an assignee from the owner table, and posts the
+  comment as text. It never sets a milestone and never changes the title, body or state.
+  A verdict that fails these checks is dropped and the issue gets `needs-triage`.
 
 ### 5. Recent issues run through it
 
