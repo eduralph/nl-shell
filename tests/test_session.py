@@ -1509,6 +1509,35 @@ def test_bashrc_readonly_pinned_variable_starts_degraded(start_session, monkeypa
 
 
 @pytest.mark.parametrize(
+    "ps4",
+    ["'$(touch MARK)'", "'`touch MARK`'", r"'\044(touch MARK)'"],
+    ids=["dollar", "backtick", "octal-escape"],
+)
+def test_bashrc_readonly_ps4_with_eval_disabled_starts_degraded(start_session, monkeypatch,
+                                                                tmp_path, ps4):
+    # No sentinel without eval: only the check on PS4's value can catch this.
+    _write_bashrc(f"readonly PS4={ps4}\nenable -n eval\n")
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert session.degraded
+    assert "PS4 holds" in session.degraded_reason
+    _assert_refused_unsent(session, pty_writes, "set -x", tmp_path / "MARK")
+
+
+def test_bashrc_plain_ps4_still_gives_a_working_session(start_session):
+    _write_bashrc("PS4='>> '\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+    assert "PS4: readonly variable" in _run(session, "PS4='$(touch MARK)'").text
+
+
+def test_bashrc_function_named_like_a_sentinel_is_not_one(start_session):
+    _write_bashrc("nl_shell_unpinned_helper() { :; }\n")
+    session, _ = start_session()
+    assert not session.degraded, session.degraded_reason
+
+
+@pytest.mark.parametrize(
     "bashrc",
     ["readonly() { :; }\n", "unset() { :; }\n", "alias readonly=: unset=:\n"],
     ids=["readonly-function", "unset-function", "aliases"],

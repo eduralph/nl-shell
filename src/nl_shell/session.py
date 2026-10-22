@@ -143,7 +143,8 @@ _V_VARS = (
 #   starts degraded; the pins call `\builtin`, so a ~/.bashrc function or alias named
 #   readonly or unset cannot stop them, and the session also starts degraded unless the
 #   baseline H shows both pinned, as `enable -n readonly` or a function named `builtin`
-#   still could), the disabled hook builtins, readline on/off and its mode, its
+#   still could, and unless PS4's value holds no `$`, backtick or backslash, as
+#   `enable -n eval` stops the sentinel), the disabled hook builtins, readline on/off and its mode, its
 #   variables except history-size, the key bindings of the five keymaps, and history
 #   expansion. Every `$( … )` in the hooks keeps stderr, so a failing builtin never yields a
 #   baseline-matching empty value. If a hook function's first `\builtin set` fails (`set`
@@ -328,6 +329,15 @@ _PINNED = {
     "PS4": r'declare -\S*r\S* PS4(=.*)?',
     "MAILCHECK": r"declare -\S*r\S* MAILCHECK",
 }
+
+# The sentinel names the rcfile can define; any other `nl_shell_unpinned_*` is the user's.
+_UNPINNED_NAMES = {_UNPINNED + name for name in _PINNED}
+
+# The H line of a pinned PS4 whose value cannot run code when bash traces the hooks: no
+# `$` or backtick, and no backslash (with promptvars, `\044` becomes a `$` before the
+# expansion). It is checked on the value itself, because the sentinel above needs `eval`,
+# which ~/.bashrc can disable. A value `declare -p` shows in `$'…'` form fails it too.
+_PS4_SAFE = r'declare -\S*r\S* PS4(="[^"$`\\]*")?'
 
 _TERMIOS_FIELDS = ("iflag", "oflag", "cflag", "lflag", "ispeed", "ospeed", "cc")
 
@@ -612,7 +622,7 @@ class Session:
         assert baseline is not None
         lines = baseline.hooks.split("\n")
         unpinned = sorted(
-            name[len(_UNPINNED) :] for name in baseline.functions if name.startswith(_UNPINNED)
+            name[len(_UNPINNED) :] for name in baseline.functions if name in _UNPINNED_NAMES
         )
         ps_lines = [line for line in lines if re.match(r"declare -\S+ PS[12](=|$)", line)]
         not_pinned = [
@@ -637,6 +647,11 @@ class Session:
                 " disabled, or a function named builtin): PS4 runs code"
                 " when bash traces its hooks; with MAILCHECK set bash's mail check runs"
                 " MAILPATH messages after the hooks"
+            )
+        elif not any(re.fullmatch(_PS4_SAFE, line) for line in lines):
+            self._tracker.degrade(
+                "PS4 holds $, ` or \\ after ~/.bashrc and is readonly: bash expands it"
+                " when it traces nl-shell's hooks, so it could run code"
             )
         elif any(not re.match(r"declare -[-x] PS[12]=", line) for line in ps_lines):
             self._tracker.degrade(
