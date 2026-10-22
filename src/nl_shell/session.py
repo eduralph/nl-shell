@@ -414,6 +414,7 @@ class CommandResult:
     output_truncated: bool
     snapshot: Snapshot
     variables_changed: bool  # the snapshot's V differs from the baseline's
+    before: Snapshot  # the snapshot bash reported last before this command was pasted
     # Real-terminal input reached the command (§6.1); output after it is not captured.
     input_forwarded: bool = False
     # Some of the output was captured but never reached the real terminal: the copy was
@@ -765,13 +766,15 @@ class Session:
         if not self._check_stopped():
             self._prompt_check()
         self._raise_if_degraded()
+        before = self._tracker.snapshot
+        assert before is not None
         owner = None if terminal is None else terminal.own(self._proc.fd)
         try:
             if owner is not None:
                 owner.begin()
             self._tracker.command_sent()
             _write_all(self._proc.fd, PASTE_START + data + PASTE_END + b"\r")
-            return self._wait_for_result(timeout, owner)
+            return self._wait_for_result(timeout, before, owner)
         finally:
             if owner is not None:
                 owner.end()
@@ -783,7 +786,9 @@ class Session:
                 code=self._tracker.degraded_code or "other",
             )
 
-    def _wait_for_result(self, timeout: float | None, owner=None) -> CommandResult:
+    def _wait_for_result(
+        self, timeout: float | None, before: Snapshot, owner=None
+    ) -> CommandResult:
         """Wait for the command's records. ``owner`` (the terminal side of §6, from
         ``nl_shell.session_terminal``) forwards real-terminal input until ``D``."""
         assert self._proc is not None and self._ctl is not None
@@ -843,7 +848,7 @@ class Session:
                 result = None
                 snapshot = self._tracker.snapshot
                 if done is not None and snapshot is not None and snapshot.seq == done.seq:
-                    result = self._result(done, snapshot, output, owner)
+                    result = self._result(done, snapshot, before, output, owner)
                 raise SessionDegraded(
                     self._tracker.degraded_reason or "unknown",
                     result,
@@ -851,7 +856,7 @@ class Session:
                 )
             if finished is not None:
                 assert done is not None
-                return self._result(done, finished, output, owner)
+                return self._result(done, finished, before, output, owner)
 
             now = time.monotonic()
             # §4.2 third trigger; until E, as a snapshot cut short also ends at a prompt.
@@ -898,7 +903,7 @@ class Session:
             )
 
     def _result(
-        self, done: Done, snapshot: Snapshot, output: _Output, owner=None
+        self, done: Done, snapshot: Snapshot, before: Snapshot, output: _Output, owner=None
     ) -> CommandResult:
         baseline = self._tracker.baseline
         assert baseline is not None
@@ -913,6 +918,7 @@ class Session:
             output_truncated=output.truncated and self._tracker.started,
             snapshot=snapshot,
             variables_changed=snapshot.variables != baseline.variables,
+            before=before,
             input_forwarded=owner is not None and owner.forwarded,
             mirror_dropped=owner is not None and owner.mirror_dropped,
         )
