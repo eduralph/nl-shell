@@ -15,10 +15,11 @@ an issue gets `bug` or `enhancement` and the `new` label, which the Issue triage
 keeps in step with the milestone: an open issue without a milestone carries `new`. Nothing
 records how urgent an issue is, so ordering the backlog is done by hand, issue by issue.
 
-We want new issues qualified automatically, by a model run from a GitHub Action, with the
-maintainer making the final call. A model can only apply a priority scheme consistently if
-the scheme is written down as explicit rules. This ADR is that scheme. It is also the rule
-text the triage bot follows, so the bot and a human triaging by hand reach the same result.
+Triage needs a priority scheme written down as explicit rules, so that two people, or the
+same person on different days, put the same issue at the same priority. This ADR is that
+scheme. It applies to all triage, whether done by hand or automated. One planned use is a
+model run from a GitHub Action that qualifies new issues, with the maintainer making the
+final call; it follows the same rules, so the bot and a human reach the same result.
 
 Two things shape the scheme. First, nl-shell is a shell that runs commands, so a safety
 bypass that needs an attacker to set it up is still the main threat (see the threat model
@@ -29,7 +30,8 @@ whoever sets a milestone effectively starts work on the issue.
 ## Decision
 
 We will qualify every issue with three labels, derive a priority from two of them with a
-fixed table, and then apply a short list of overrides.
+fixed table, and then apply a short list of overrides. Sections 1–3 apply to whoever
+triages; section 4 adds what an automated triager may and may not do.
 
 ### 1. Labels describing the issue
 
@@ -78,12 +80,14 @@ review finding or a bug report produced the issue.
   that runs commands, a bypass that needs an attacker is still the main threat.
 - **`release-gating` means at least P1**, whatever the table says.
 - **`accessibility` barriers get at least P2.**
-- **Deferred review findings** keep the review's priority, unless the bot can show the PR
-  changed the impact.
-- **When unsure, leave the priority off.** If the bot can't place severity or reach, it
-  sets `needs-triage` and says what it's missing. It never guesses a lower priority.
+- **Deferred review findings** keep the review's priority, unless the triager can show the
+  PR changed the impact.
+- **When unsure, leave the priority off.** If the triager can't place severity or reach,
+  they set `needs-triage` and say what is missing. Never guess a lower priority.
 
-### 4. What the bot does on each new issue
+### 4. Automated triage
+
+When a bot triages, it does this on each new issue:
 
 1. Set type (`bug`, `enhancement`, `documentation`, or `research`), plus severity, reach,
    area, and P0–P3.
@@ -115,7 +119,8 @@ Classified from titles only, as a check of the scheme rather than real triage:
 ## Consequences
 
 Every issue carries a priority that says why it has it, and the backlog can be sorted by
-label instead of by rereading issues. The bot's comment makes each call cheap to check and
+label instead of by rereading issues. Manual and automated triage use the same rules, so
+either can check the other. The bot's comment makes each automated call cheap to check and
 correct.
 
 The security override moves more issues up than any other rule; it is chosen deliberately
@@ -123,11 +128,12 @@ and means attacker-only bugs compete with common crashes for the current milesto
 Leaving the milestone to the maintainer keeps the loop from starting work on the bot's
 judgement alone, at the cost of one manual step per issue.
 
-Each triage run uses model tokens. How much depends mostly on how much code the bot reads,
+Each automated triage run uses model tokens. How much depends mostly on how much code the bot reads,
 which the workflow limits.
 
-Follow-on work: create the labels, write the triage workflow and its prompt from this ADR,
-and test it on existing issues before it runs on new ones. Once this works on nl-shell, the
+Follow-on work: create the labels, triage the open issues by these rules, then write the
+triage workflow and its prompt from this ADR and test it on existing issues before it runs
+on new ones. Once this works on nl-shell, the
 severity, reach and priority parts are reused in the other repositories with their own area
 labels.
 
