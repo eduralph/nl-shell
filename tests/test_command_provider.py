@@ -210,7 +210,30 @@ def test_read_only_mode_is_used(tmp_path, monkeypatch):
 
     monkeypatch.setattr(command_provider.sqlite3, "connect", connect)
     assert lookup_for(db)("htop") == ("htop",)
-    assert seen == [(db.as_uri() + "?mode=ro", True)]
+    assert seen == [(db.as_uri() + "?mode=ro&immutable=1", True)]
+
+
+def test_wal_mode_file_gets_no_sidecar_files(tmp_path):
+    db = make_db(tmp_path / "c.db", [("htop", 1, "htop")])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()  # the last close removes -wal and -shm
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.db"]
+    assert lookup_for(db)("htop") == ("htop",)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.db"]
+
+
+def test_wal_mode_file_in_a_read_only_directory_is_read(tmp_path):
+    folder = tmp_path / "data"
+    db = make_db(folder / "c.db", [("htop", 1, "htop")])
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    folder.chmod(0o555)
+    try:
+        assert lookup_for(db)("htop") == ("htop",)
+    finally:
+        folder.chmod(0o755)
 
 
 @pytest.mark.parametrize("word", ["htop'", "htop; DROP TABLE commands", "ht%", "'"])

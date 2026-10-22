@@ -52,8 +52,10 @@ def provider_lookup(provider: CommandProvider | None) -> Lookup:
             if not path.is_file():
                 return ()
             # as_uri() percent-encodes `?`, `#` and `%` in the path, so they can't end the
-            # path early or add URI parameters.
-            uri = path.as_uri() + "?mode=ro"
+            # path early or add URI parameters. `immutable=1`: no locking and no journal, so
+            # a WAL-mode file gets no `-wal`/`-shm` files next to it, and an unwritable
+            # directory can't make it unreadable. The package manager owns the file.
+            uri = path.as_uri() + "?mode=ro&immutable=1"
             with closing(sqlite3.connect(uri, uri=True, timeout=_TIMEOUT)) as db:
                 # The word is a bound parameter: no SQL is built from it.
                 rows = db.execute(provider.query, (word,)).fetchall()
