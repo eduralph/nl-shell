@@ -841,7 +841,7 @@ class Session:
             if self._check_stopped():
                 return False
             if time.monotonic() > deadline:
-                self._tracker.degrade("the shell did not return to its prompt")
+                self._tracker.degrade("the shell did not return to its prompt", "missing-record")
                 return False
             self._drain_control()
             if self._tracker.degraded:

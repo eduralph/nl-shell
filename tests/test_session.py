@@ -476,6 +476,20 @@ def test_unreadable_proc_syscall_during_a_run_degrades(start_session, tmp_path):
     assert session.degraded_code == "missing-record"
 
 
+def test_no_prompt_before_a_paste_degrades_as_missing_record(start_session, monkeypatch):
+    session_mod = _session_module()
+    pty_writes = _spy_on_pty_writes(monkeypatch)
+    session, _ = start_session()
+    assert not session.degraded
+    monkeypatch.setattr(session_mod, "_SETTLE", 0.2)
+    monkeypatch.setattr(session, "_reading_terminal", lambda: False)  # never at a prompt
+    outcome = _try_run(session, "true")
+    assert isinstance(outcome, session_mod.SessionDegraded)
+    assert outcome.reason == "the shell did not return to its prompt"
+    assert outcome.code == session.degraded_code == "missing-record"
+    _assert_refused_unsent(session, pty_writes, "echo hello")
+
+
 # ---- (f) snapshot fields, the baseline, H and V --
 
 
