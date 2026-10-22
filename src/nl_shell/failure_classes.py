@@ -19,8 +19,13 @@ tests over the raw text, with no quote or nesting tracking. It treats a command 
 privileged when (P1) a privilege program's name appears anywhere once backslashes and
 quote characters are deleted, (P2) the text holds a code-running or quoting marker,
 (P3) the first word of any segment is not a plain name, (P4) a word names a shell
-function, or (P5) a word names an alias whose value is privileged. Over-matching is the
-safe direction. The known misses are listed in the threat model's "Known gaps".
+function, or (P5) a word names an alias whose value is privileged. P4 and P5 use the
+functions and aliases from both the snapshot before the command and the one after it, so
+a function or alias that removes itself is still seen. A command that ran while a
+``command_not_found_handle`` function existed is privileged too: bash calls the handler
+for any word it cannot resolve, without the handler's name appearing in the text.
+Over-matching is the safe direction. The known misses are listed in the threat model's
+"Known gaps".
 
 ``to_reader`` means only "eligible by exit status": dropping secret-labelled output
 (ADR-0025) before the reader is #61's job, not this module's. The package suggestion for
@@ -86,6 +91,9 @@ BASH_KEYWORDS = frozenset(
     """.split()
 )
 
+# Bash calls this function for a command it cannot find (bash(1), COMMAND EXECUTION).
+NOT_FOUND_HANDLER = "command_not_found_handle"
+
 PRIVILEGE_NAMES = (
     "sudo su pkexec doas run0 machinectl sudo-rs sudo.ws sudoedit sudoedit-rs".split()
 )
@@ -144,20 +152,26 @@ def classify(result: CommandResult, command: str, lookup: Lookup | None = None) 
         )
 
     snapshot = result.snapshot
+    states = (result.before, snapshot)
+    functions = frozenset(itertools.chain.from_iterable(s.functions for s in states))
+
+    def privileged() -> bool:
+        return any(is_privileged(command, functions, s.aliases) for s in states)
+
     if not result.ran:
         if _blank_or_comment(command):
             return make(FailureClass.NONE, "")
-        if is_privileged(command, snapshot.functions, snapshot.aliases):
+        if privileged():
             return make(FailureClass.PRIVILEGE, PRIVILEGE_MESSAGE)
         return make(FailureClass.OTHER, SYNTAX_MESSAGE)
     if status == 0:
         return make(FailureClass.NONE, "")
     if status == 130:
         return make(FailureClass.INTERRUPTED, INTERRUPTED_MESSAGE)
-    if is_privileged(command, snapshot.functions, snapshot.aliases):
+    if NOT_FOUND_HANDLER in functions or privileged():
         return make(FailureClass.PRIVILEGE, PRIVILEGE_MESSAGE)
     if status == 127:
-        word = _unresolved_word(command, snapshot)
+        word = _unresolved_word(command, states)
         if word is None:
             return make(FailureClass.NOT_FOUND, "Command not found.")
         packages = _packages(lookup, word)
@@ -359,7 +373,7 @@ def _blank_or_comment(text: str) -> bool:
 # --- the 127 suggestion (rule 4) -------------------------------------------------------
 
 
-def _unresolved_word(command: str, snapshot) -> str | None:
+def _unresolved_word(command: str, states) -> str | None:
     """The first word of a simple command that bash did not find, when it is safe to show.
 
     None when the text is not one simple command, when the word may have resolved (an
@@ -374,8 +388,9 @@ def _unresolved_word(command: str, snapshot) -> str | None:
     word = first_token(command)
     if not _displayable(word) or "/" in word:
         return None
-    if word in _parse_aliases(snapshot.aliases):
+    if any(word in _parse_aliases(s.aliases) for s in states):
         return None
+    snapshot = states[-1]
     disabled = set(_DISABLED_LINE.findall(snapshot.disabled_builtins))
     if word in BASH_KEYWORDS or (word in BASH_BUILTINS and word not in disabled):
         return None

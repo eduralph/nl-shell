@@ -224,6 +224,15 @@ def test_vector7_alias_and_function_reach_the_snapshot(start_session):
     assert "alias ll2='ls -la'" in result.snapshot.aliases.split("\n")
 
 
+def test_result_carries_the_snapshot_from_before_the_command(start_session):
+    session, _ = start_session()
+    _run(session, "f(){ unset -f f; return 1; }")
+    result = _run(session, "f")
+    assert result.status == 1
+    assert "f" in result.before.functions
+    assert "f" not in result.snapshot.functions
+
+
 def test_vector8_replaced_prompt_command_degrades(start_session):
     session_mod = _session_module()
     session, _ = start_session()

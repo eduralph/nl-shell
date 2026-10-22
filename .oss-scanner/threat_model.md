@@ -190,8 +190,9 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
 - **The failure classifier's privilege check is text-only until #12's parse**
   (`failure_classes`). It treats a command as privileged when a privilege program's name
   appears anywhere, when the text holds `$(`, a backtick, `<(`, `>(`, `$'`, `$"` or a
-  backslash, when the first word of any command is not a plain name, or when a word names
-  a shell function (or an alias whose value is privileged). It does not see: (1) a
+  backslash, when the first word of any command is not a plain name, when a word names
+  a shell function (or an alias whose value is privileged) in the shell's state before or
+  after the command, or when a `command_not_found_handle` function exists. It does not see: (1) a
   privilege program named through an expansion that sits behind a plain first word (for
   example `timeout 5 ${X}sudo x`, `time -p sud${X}o x` or `bash -c "$CMD"`); (2) a script
   or input fed to an interpreter (`./build.sh`, `sh x.sh`, `cat cmds | sh`); (3) a plain

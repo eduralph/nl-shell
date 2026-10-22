@@ -41,8 +41,11 @@ def snapshot(path, functions=(), aliases="", disabled=""):
     )
 
 
-def completed(status, path, pipestatus=None, ran=True, **state):
-    """A ``CommandResult`` as ``Session.run`` builds it from the D record and snapshot."""
+def completed(status, path, pipestatus=None, ran=True, before=None, **state):
+    """A ``CommandResult`` as ``Session.run`` builds it from the D record and snapshot.
+
+    ``state`` shapes the snapshot after the command, ``before`` (a dict of the same keys)
+    the one before it; by default the shell had no functions or aliases before."""
     from nl_shell.session import CommandResult
 
     return CommandResult(
@@ -55,6 +58,7 @@ def completed(status, path, pipestatus=None, ran=True, **state):
         output_truncated=False,
         snapshot=snapshot(str(path), **state),
         variables_changed=False,
+        before=snapshot(str(path), **(before or {})),
     )
 
 
@@ -321,6 +325,44 @@ def test_function_at_127_is_privilege_not_a_suggestion(bin_dir):
 
 def test_unrelated_function_does_not_matter(bin_dir):
     check(classify(2, "ls", bin_dir, functions=("t",)), "OTHER", True, True)
+
+
+def test_function_that_unsets_itself_is_privileged(bin_dir):
+    # f(){ sudo -n x; unset -f f; return 1; }: gone from the snapshot after the command.
+    check_privileged(classify(1, "f", bin_dir, before={"functions": ("f",)}))
+
+
+def test_alias_that_unaliases_itself_is_privileged(bin_dir):
+    before = {"aliases": "alias s='sudo -n x; unalias s'\n"}
+    check_privileged(classify(1, "s", bin_dir, before=before))
+
+
+def test_alias_only_before_gets_no_package_suggestion(bin_dir):
+    failure = classify(127, "htop", bin_dir, before={"aliases": "alias htop='nope'\n"})
+    check(failure, "NOT_FOUND", True, False)
+    assert failure.command_word is None
+    assert failure.packages == ()
+
+
+# --- privilege: bash's command_not_found_handle ----------------------------------------
+
+HANDLER = ("command_not_found_handle",)
+
+
+@pytest.mark.parametrize("status", [1, 2, 126, 127, 137])
+def test_not_found_handler_before_makes_any_failure_privileged(bin_dir, status):
+    # Bash calls the handler for any word it cannot resolve; its name is not in the text.
+    check_privileged(classify(status, "htop", bin_dir, before={"functions": HANDLER}))
+
+
+def test_not_found_handler_after_is_privileged(bin_dir):
+    check_privileged(classify(127, "htop", bin_dir, functions=HANDLER))
+
+
+def test_not_found_handler_does_not_matter_when_nothing_ran(bin_dir):
+    before = {"functions": HANDLER}
+    failure = classify(2, "if", bin_dir, ran=False, functions=HANDLER, before=before)
+    check(failure, "OTHER", True, True)
 
 
 # --- privilege, P5: an alias whose value is privileged ---------------------------------

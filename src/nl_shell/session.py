@@ -403,6 +403,7 @@ class CommandResult:
     output_truncated: bool
     snapshot: Snapshot
     variables_changed: bool  # the snapshot's V differs from the baseline's
+    before: Snapshot  # the snapshot bash reported last before this command was pasted
 
     @property
     def text(self) -> str:
@@ -729,9 +730,11 @@ class Session:
         if not self._check_stopped():
             self._prompt_check()
         self._raise_if_degraded()
+        before = self._tracker.snapshot
+        assert before is not None
         self._tracker.command_sent()
         _write_all(self._proc.fd, PASTE_START + data + PASTE_END + b"\r")
-        return self._wait_for_result(timeout)
+        return self._wait_for_result(timeout, before)
 
     def _raise_if_degraded(self) -> None:
         if self._tracker.degraded:
@@ -740,7 +743,7 @@ class Session:
                 code=self._tracker.degraded_code or "other",
             )
 
-    def _wait_for_result(self, timeout: float | None) -> CommandResult:
+    def _wait_for_result(self, timeout: float | None, before: Snapshot) -> CommandResult:
         assert self._proc is not None and self._ctl is not None
         fd = self._proc.fd
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -773,7 +776,7 @@ class Session:
                 result = None
                 snapshot = self._tracker.snapshot
                 if done is not None and snapshot is not None and snapshot.seq == done.seq:
-                    result = self._result(done, snapshot, output)
+                    result = self._result(done, snapshot, before, output)
                 raise SessionDegraded(
                     self._tracker.degraded_reason or "unknown",
                     result,
@@ -781,7 +784,7 @@ class Session:
                 )
             if finished is not None:
                 assert done is not None
-                return self._result(done, finished, output)
+                return self._result(done, finished, before, output)
 
             now = time.monotonic()
             # §4.2 third trigger; until E, as a snapshot cut short also ends at a prompt.
@@ -827,7 +830,9 @@ class Session:
                 " bracketed paste, or the end marker before D never reached the terminal)"
             )
 
-    def _result(self, done: Done, snapshot: Snapshot, output: _Output) -> CommandResult:
+    def _result(
+        self, done: Done, snapshot: Snapshot, before: Snapshot, output: _Output
+    ) -> CommandResult:
         baseline = self._tracker.baseline
         assert baseline is not None
         return CommandResult(
@@ -839,6 +844,7 @@ class Session:
             output_truncated=output.truncated and self._tracker.started,
             snapshot=snapshot,
             variables_changed=snapshot.variables != baseline.variables,
+            before=before,
         )
 
     # ----- the prompt rule (§4.2, brief decision 7) --
