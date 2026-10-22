@@ -1,0 +1,352 @@
+"""Tests for triage_priority.py: everything after the model call, offline.
+
+Run: python -I -m unittest discover -s .github/triage
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import triage_priority as tp  # noqa: E402
+
+CONFIG = tp.load_config()
+AREAS = tp.area_names(CONFIG)
+NO_FLAGS = {f: False for f in tp.FLAGS}
+
+
+def verdict(**over) -> dict:
+    v = {
+        "type": "bug", "severity": "major", "reach": "common", "areas": ["session"],
+        "flags": dict(NO_FLAGS), "review_priority": "none", "unsure": False, "missing": "",
+        "secret_in_issue": False, "vulnerability_report": False,
+        "reasons": {"type": "The session ends when it should keep running.",
+                    "severity": "The whole session ends and the user loses their shell state.",
+                    "reach": "Anyone who interrupts a slow request runs into it.",
+                    "area": "The persistent bash session and its control channel.",
+                    "overrides": "None apply."},
+    }
+    v.update(over)
+    return v
+
+
+def issue(**over) -> tp.Issue:
+    i = tp.Issue(number=7, title="The session ends after an interrupt",
+                 body="Steps: start a long command, press Ctrl-C, then type another command.",
+                 labels=set(), assignees=[])
+    for k, val in over.items():
+        setattr(i, k, val)
+    return i
+
+
+def plan(i: tp.Issue | None = None, **v) -> tp.Plan:
+    return tp.build_plan(i or issue(), tp.validate(verdict(**v), AREAS), CONFIG,
+                         model=tp.MODEL, usage="1 in, 1 out", truncated=False)
+
+
+def prio(severity, reach, flags=None, review="none", labels=()):
+    return tp.compute_priority(severity, reach, flags or NO_FLAGS, review, set(labels))
+
+
+class Table(unittest.TestCase):
+    def test_matches_adr_0026(self) -> None:
+        expected = {
+            ("critical", "common"): 0, ("critical", "edge"): 1, ("critical", "adversarial"): 1,
+            ("major", "common"): 1, ("major", "edge"): 2, ("major", "adversarial"): 2,
+            ("minor", "common"): 2, ("minor", "edge"): 3, ("minor", "adversarial"): 3,
+            ("trivial", "common"): 3, ("trivial", "edge"): 3, ("trivial", "adversarial"): 3,
+        }
+        for (sev, reach), p in expected.items():
+            with self.subTest(sev=sev, reach=reach):
+                self.assertEqual(prio(sev, reach)[0], p)
+
+    def test_security_lifts_adversarial_major_to_p1(self) -> None:
+        p, base, notes = prio("major", "adversarial", dict(NO_FLAGS, security=True))
+        self.assertEqual((p, base), (1, 2))
+        self.assertIn("security", notes[0])
+
+    def test_release_gating_label_is_at_least_p1(self) -> None:
+        self.assertEqual(prio("trivial", "common", labels={"release-gating"})[0], 1)
+
+    def test_accessibility_is_at_least_p2(self) -> None:
+        self.assertEqual(prio("minor", "edge", dict(NO_FLAGS, accessibility=True))[0], 2)
+        self.assertEqual(prio("minor", "edge", labels={"accessibility"})[0], 2)
+
+    def test_review_priority_is_kept(self) -> None:
+        # A minor/edge deferred review finding: P3 by the table, P2 from the review.
+        p, base, notes = prio("minor", "edge", review="P2")
+        self.assertEqual((p, base), (2, 3))
+        self.assertIn("deferred review", notes[0])
+
+    def test_review_priority_can_lower_the_table(self) -> None:
+        self.assertEqual(prio("major", "common", review="P2")[0], 2)
+
+    def test_floors_apply_after_the_review_priority(self) -> None:
+        p, _, notes = prio("major", "adversarial", dict(NO_FLAGS, security=True), review="P2")
+        self.assertEqual(p, 1)
+        self.assertEqual(len(notes), 1)  # the review agrees with the table; only the floor
+
+    def test_floor_never_lowers(self) -> None:
+        p, _, notes = prio("critical", "common", dict(NO_FLAGS, security=True))
+        self.assertEqual((p, notes), (0, []))
+
+    def test_every_flag_has_a_floor(self) -> None:
+        self.assertLessEqual(set(tp.FLAGS), set(tp.FLOORS))
+
+
+class Validate(unittest.TestCase):
+    def test_rejects_unknown_values(self) -> None:
+        for bad in ({"severity": "blocker"}, {"reach": "rare"}, {"type": "chore"},
+                    {"areas": ["kernel"]}, {"review_priority": "P4"}):
+            with self.subTest(bad=bad), self.assertRaises(tp.InvalidVerdict):
+                tp.validate(verdict(**bad), AREAS)
+
+    def test_rejects_missing_fields(self) -> None:
+        for field in ("flags", "review_priority", "secret_in_issue", "vulnerability_report"):
+            v = verdict()
+            del v[field]
+            with self.subTest(field=field), self.assertRaises(tp.InvalidVerdict):
+                tp.validate(v, AREAS)
+
+    def test_at_most_two_areas(self) -> None:
+        got = tp.validate(verdict(areas=["session", "terminal", "repl"]), AREAS)["areas"]
+        self.assertEqual(got, ["session", "terminal"])
+
+    def test_no_area_is_allowed(self) -> None:
+        self.assertEqual(tp.validate(verdict(areas=[]), AREAS)["areas"], [])
+
+    def test_schema_enums_match_config(self) -> None:
+        schema = tp.verdict_schema(AREAS)
+        self.assertEqual(schema["properties"]["areas"]["items"]["enum"], AREAS)
+        self.assertEqual(set(schema["required"]), set(schema["properties"]))
+
+
+class Echo(unittest.TestCase):
+    BODY = ("The session in /home/alice/.config/nl-shell fails on host build-7.internal.example "
+            "with token ghp_4XQ7EXAMPLE and the log line: degraded at sequence number 48213.")
+
+    def test_withholds_a_reason_that_quotes_the_issue(self) -> None:
+        r = tp.scrub("The log line degraded at sequence number shows the failure.", self.BODY)
+        self.assertIn("withheld", r)
+
+    def test_withholds_a_reason_that_repeats_a_number(self) -> None:
+        self.assertIn("withheld", tp.scrub("The session at step 48213 fails.", self.BODY))
+
+    def test_withholds_a_single_token_secret(self) -> None:
+        for reason in ("The token ghp_4XQ7EXAMPLE is rejected by the server.",
+                       "The host build-7.internal.example cannot start bash.",
+                       "The folder /home/alice/.config/nl-shell is left behind."):
+            with self.subTest(reason=reason):
+                self.assertIn("withheld", tp.scrub(reason, self.BODY))
+
+    def test_hyphenated_words_are_not_identifiers(self) -> None:
+        body = "A half-finished command is shown to a read-only reader."
+        r = "A half-finished command reaches the read-only reader model."
+        self.assertEqual(tp.scrub(r, body), r)
+
+    def test_keeps_a_general_reason(self) -> None:
+        r = "The session degrades before the command runs."
+        self.assertEqual(tp.scrub(r, self.BODY), r)
+
+    def test_neutralises_mentions_and_markup(self) -> None:
+        r = tp.scrub("ping @eduralph <img src=x> | `code` **bold**", "")
+        self.assertNotIn("@e", r)
+        for ch in "<>|`*":
+            self.assertNotIn(ch, r)
+
+    def test_one_word_is_not_a_reason(self) -> None:
+        for bare in ("major", "bug", "", "area session"):
+            with self.subTest(bare=bare):
+                self.assertEqual(tp.scrub(bare, ""), "(no reason given)")
+
+    def test_schema_describes_each_reason(self) -> None:
+        props = tp.verdict_schema(AREAS)["properties"]["reasons"]["properties"]
+        for key, spec in props.items():
+            with self.subTest(reason=key):
+                self.assertIn("sentence", spec["description"])
+
+    def test_caps_length(self) -> None:
+        self.assertLessEqual(len(tp.scrub("word " * 100, "")), tp.MAX_REASON)
+
+
+class SecurityNotes(unittest.TestCase):
+    def test_vulnerability_report_is_labelled_but_not_restated(self) -> None:
+        p = plan(severity="critical", reach="adversarial", vulnerability_report=True,
+                 flags=dict(NO_FLAGS, security=True))
+        self.assertIn("priority:P1", p.add_labels)
+        self.assertIn("follow up with you privately", p.comment)
+        for reason in verdict()["reasons"].values():
+            self.assertNotIn(reason, p.comment)
+
+    def test_vulnerability_report_hides_what_is_missing(self) -> None:
+        p = plan(vulnerability_report=True, unsure=True, missing="Which escape sequence triggers it.")
+        self.assertNotIn("escape sequence", p.comment)
+
+    def test_secret_note_asks_to_rotate(self) -> None:
+        self.assertIn("rotate", plan(secret_in_issue=True).comment)
+
+    def test_no_notes_on_an_ordinary_issue(self) -> None:
+        c = plan().comment
+        self.assertNotIn("privately", c)
+        self.assertNotIn("rotate", c)
+
+
+class Skip(unittest.TestCase):
+    def test_skips(self) -> None:
+        cases = {
+            "already has a priority": issue(labels={"priority:P2"}),
+            "is a pull request": issue(is_pr=True),
+            "is closed": issue(state="closed"),
+            "was opened by a bot": issue(author_is_bot=True),
+            "was already triaged": issue(triaged_before=True),
+        }
+        for why, i in cases.items():
+            with self.subTest(why=why):
+                self.assertEqual(tp.skip_reason(i), why)
+
+    def test_needs_triage_is_retried(self) -> None:
+        self.assertIsNone(tp.skip_reason(issue(triaged_before=True, labels={"needs-triage"})))
+
+    def test_fresh_issue_is_triaged(self) -> None:
+        self.assertIsNone(tp.skip_reason(issue()))
+
+
+class BuildPlan(unittest.TestCase):
+    def test_labels_and_priority(self) -> None:
+        p = plan()
+        self.assertEqual(p.number, 7)
+        self.assertEqual(p.add_labels, ["bug", "area:session", "sev:major", "reach:common", "priority:P1"])
+        self.assertEqual(p.assignee, "eduralph")
+        self.assertTrue(p.comment.startswith(tp.MARKER))
+        self.assertIn("major × common is P1", p.comment)
+
+    def test_label_descriptions_fit_github_limit(self) -> None:
+        for group in ("severity", "reach", "area", "priority", "other"):
+            for name, spec in CONFIG[group].items():
+                with self.subTest(label=name):
+                    self.assertLessEqual(len(spec["description"]), 100)
+
+    def test_every_label_it_adds_is_allowed(self) -> None:
+        p = plan(flags=dict(NO_FLAGS, security=True), areas=["terminal", "repl"])
+        self.assertLessEqual(set(p.add_labels), tp.allowed_labels(CONFIG))
+
+    def test_keeps_existing_type_and_assignee(self) -> None:
+        p = plan(i=issue(labels={"bug"}, assignees=["someone"]), type="enhancement")
+        self.assertNotIn("enhancement", p.add_labels)
+        self.assertIsNone(p.assignee)
+        self.assertIn("It reads more like enhancement", p.comment)
+
+    def test_no_type_note_when_the_label_agrees(self) -> None:
+        self.assertNotIn("reads more like", plan(i=issue(labels={"bug"})).comment)
+
+    def test_non_bug_types_get_no_priority(self) -> None:
+        for kind in ("enhancement", "documentation", "research"):
+            with self.subTest(kind=kind):
+                p = plan(type=kind)
+                self.assertIn(kind, p.add_labels)
+                self.assertFalse(any(l.startswith(("priority:", "sev:", "reach:")) for l in p.add_labels))
+                self.assertIn("#182", p.comment)
+
+    def test_existing_non_bug_label_wins_over_a_bug_verdict(self) -> None:
+        p = plan(i=issue(labels={"documentation"}))
+        self.assertFalse(any(l.startswith("priority:") for l in p.add_labels))
+
+    def test_unsure_sets_needs_triage_and_no_priority(self) -> None:
+        p = plan(unsure=True, missing="Which bash version the session ran.")
+        self.assertIn("needs-triage", p.add_labels)
+        self.assertFalse(any(l.startswith(("priority:", "sev:", "reach:")) for l in p.add_labels))
+
+    def test_override_is_explained(self) -> None:
+        p = plan(severity="major", reach="adversarial", flags=dict(NO_FLAGS, security=True))
+        self.assertIn("priority:P1", p.add_labels)
+        self.assertIn("security or safety bug", p.comment)
+
+    def test_review_priority_is_explained(self) -> None:
+        p = plan(severity="minor", reach="edge", review_priority="P2")
+        self.assertIn("priority:P2", p.add_labels)
+        self.assertIn("kept the deferred review's P2", p.comment)
+
+    def test_never_touches_the_milestone(self) -> None:
+        self.assertFalse(hasattr(plan(), "milestone"))
+
+    def test_input_is_capped_and_says_so(self) -> None:
+        text, truncated = tp.issue_input(issue(body="x" * (tp.MAX_BODY + 50)))
+        self.assertTrue(truncated)
+        self.assertIn("cut at", text)
+        self.assertLess(len(text), tp.MAX_BODY + tp.MAX_TITLE + 200)
+
+    def test_unclassified_plan(self) -> None:
+        p = tp.unclassified_plan(issue(), "the model declined to classify it", model="m", usage="u")
+        self.assertEqual((p.number, p.add_labels), (7, ["needs-triage"]))
+        self.assertIn(tp.MARKER, p.comment)
+
+
+class ApplyCheck(unittest.TestCase):
+    """The apply job treats the classify job's plan as data and checks it again."""
+
+    def entry(self, **over) -> dict:
+        e = {"number": 7, "add_labels": ["bug", "area:session", "sev:major", "reach:common",
+                                         "priority:P1"],
+             "assignee": "eduralph", "comment": tp.MARKER + "\nok\n"}
+        e.update(over)
+        return e
+
+    def test_a_built_plan_passes(self) -> None:
+        from dataclasses import asdict
+        p = plan(severity="minor", reach="edge", review_priority="P2")
+        self.assertEqual(tp.check_plan(asdict(p), CONFIG), p)
+
+    def test_round_trip_through_the_file(self) -> None:
+        plans = [plan(), tp.unclassified_plan(issue(number=9), "x", model="m", usage="u")]
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.json"
+            tp.write_plans(path, plans)
+            self.assertEqual(tp.read_plans(path, CONFIG), plans)
+
+    def test_rejects(self) -> None:
+        bad = {
+            "unknown label": self.entry(add_labels=["bug", "wontfix"]),
+            "milestone-like label": self.entry(add_labels=["release-gating"]),
+            "two priorities": self.entry(add_labels=["priority:P1", "priority:P3"]),
+            "two severities": self.entry(add_labels=["sev:major", "sev:minor"]),
+            "two types": self.entry(add_labels=["bug", "enhancement"]),
+            "three areas": self.entry(add_labels=["area:session", "area:terminal", "area:repl"]),
+            "foreign assignee": self.entry(assignee="mallory"),
+            "foreign comment": self.entry(comment="Please run this script: ..."),
+            "huge comment": self.entry(comment=tp.MARKER + "x" * tp.MAX_COMMENT),
+            "bad number": self.entry(number="7"),
+            "bool number": self.entry(number=True),
+            "labels not a list": self.entry(add_labels="bug"),
+        }
+        for why, e in bad.items():
+            with self.subTest(why=why), self.assertRaises(tp.InvalidPlan):
+                tp.check_plan(e, CONFIG)
+        with self.assertRaises(tp.InvalidPlan):
+            tp.check_plan({"number": 7}, CONFIG)
+
+    def test_rejects_a_plan_that_is_not_a_list(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.json"
+            path.write_text(json.dumps({"number": 7}), encoding="utf-8")
+            with self.assertRaises(tp.InvalidPlan):
+                tp.read_plans(path, CONFIG)
+
+    def test_apply_never_imports_the_sdk(self) -> None:
+        # The SDK is imported only inside run_classify, never at module level or in apply.
+        tree = ast.parse(Path(tp.__file__).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [a.name for a in node.names] + [getattr(node, "module", None) or ""]
+                if "anthropic" in names:
+                    owner = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                                 and node in ast.walk(f))
+                    self.assertEqual(owner.name, "run_classify")
+
+
+if __name__ == "__main__":
+    unittest.main()
