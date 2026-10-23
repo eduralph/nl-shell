@@ -48,6 +48,10 @@ MAX_BODY = 6000
 MAX_REASON = 200
 MAX_COMMENT = 6000
 MARKER = "<!-- nl-shell-triage -->"
+# Only the workflow's own comments count as triage comments; anyone can type the marker.
+BOT_LOGIN = "github-actions[bot]"
+# An issue left at needs-triage is triaged again only when it is edited, at most this often.
+MAX_RETRIES = 2
 
 TYPES = ("bug", "enhancement", "documentation", "research")
 SEVERITIES = ("critical", "major", "minor", "trivial")
@@ -263,18 +267,21 @@ class Issue:
     state: str = "open"
     is_pr: bool = False
     author_is_bot: bool = False
-    triaged_before: bool = False
+    triage_count: int = 0  # the workflow's own triage comments on the issue
 
 
 @dataclass
 class Plan:
     number: int = 0
     add_labels: list[str] = field(default_factory=list)
+    remove_labels: list[str] = field(default_factory=list)
     assignee: str | None = None
     comment: str = ""
 
 
-def skip_reason(issue: Issue) -> str | None:
+def skip_reason(issue: Issue, retry: bool = False) -> str | None:
+    """Why ``issue`` is not triaged, or None. ``retry`` is True only for an edit to the
+    issue: the one event that may bring the information a needs-triage issue lacked."""
     if issue.is_pr:
         return "is a pull request"
     if issue.state != "open":
@@ -283,10 +290,14 @@ def skip_reason(issue: Issue) -> str | None:
         return "was opened by a bot"
     if any(label.startswith("priority:") for label in issue.labels):
         return "already has a priority"
-    # One automated pass per issue, so editing an issue does not re-spend tokens; an
-    # issue left at needs-triage is triaged again when its author adds information.
-    if issue.triaged_before and "needs-triage" not in issue.labels:
-        return "was already triaged"
+    # One automated pass per issue. A back-fill or a reopen never triages an issue again,
+    # so it cannot re-spend tokens or post the same comment twice; only an edit retries
+    # one left at needs-triage, and at most MAX_RETRIES times.
+    if issue.triage_count:
+        if not retry or "needs-triage" not in issue.labels:
+            return "was already triaged"
+        if issue.triage_count > MAX_RETRIES:
+            return "was retried too often"
     return None
 
 
@@ -344,6 +355,8 @@ def build_plan(issue: Issue, verdict: dict, config: dict, *, model: str, usage: 
         prio, base, notes = compute_priority(verdict["severity"], verdict["reach"],
                                              verdict["flags"], verdict["review_priority"],
                                              issue.labels)
+        if "needs-triage" in issue.labels:
+            plan.remove_labels.append("needs-triage")
         plan.add_labels += [f"sev:{verdict['severity']}", f"reach:{verdict['reach']}",
                             f"priority:P{prio}"]
         rows.append(_row(f"sev:{verdict['severity']}", reasons["severity"]))
@@ -407,6 +420,7 @@ def check_plan(entry: dict, config: dict) -> Plan:
         number = entry["number"]
         labels = entry["add_labels"]
         assignee = entry["assignee"]
+        remove = entry["remove_labels"]
         comment = entry["comment"]
     except (KeyError, TypeError) as e:
         raise InvalidPlan(f"missing field: {e}") from e
@@ -424,11 +438,14 @@ def check_plan(entry: dict, config: dict) -> Plan:
         raise InvalidPlan("more than one type label")
     if sum(l.startswith("area:") for l in labels) > 2:
         raise InvalidPlan("more than two area labels")
+    if not isinstance(remove, list) or not set(remove) <= {"needs-triage"}:
+        raise InvalidPlan(f"may only remove needs-triage, not {remove!r}")
     if assignee is not None and assignee not in set(config.get("owners", {}).values()):
         raise InvalidPlan(f"assignee {assignee!r} is not in the owner table")
     if not isinstance(comment, str) or not comment.startswith(MARKER) or len(comment) > MAX_COMMENT:
         raise InvalidPlan("comment is not the bot's own")
-    return Plan(number=number, add_labels=list(labels), assignee=assignee, comment=comment)
+    return Plan(number=number, add_labels=list(labels), remove_labels=list(remove),
+                assignee=assignee, comment=comment)
 
 
 def write_plans(path: Path, plans: list[Plan]) -> None:
@@ -497,6 +514,12 @@ def gh(*args: str, input: str | None = None) -> str:
         raise
 
 
+def triage_comments(comments: list[dict]) -> int:
+    """How many of ``comments`` are the workflow's own triage comments."""
+    return sum(1 for c in comments
+               if MARKER in (c.get("body") or "") and (c.get("user") or {}).get("login") == BOT_LOGIN)
+
+
 def fetch_issue(repo: str, number: int) -> Issue:
     data = json.loads(gh("api", f"repos/{repo}/issues/{number}"))
     comments = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/issues/{number}/comments"))
@@ -510,16 +533,25 @@ def fetch_issue(repo: str, number: int) -> Issue:
         state=data.get("state", "open"),
         is_pr="pull_request" in data,
         author_is_bot=(data.get("user") or {}).get("type") == "Bot",
-        triaged_before=any(MARKER in (c.get("body") or "") for c in flat),
+        triage_count=triage_comments(flat),
     )
 
 
 def open_untriaged(repo: str, limit: int) -> list[int]:
+    """Up to ``limit`` open issues a back-fill should triage, oldest first. The limit is
+    applied after skipping, so issues that stay without a priority after their one
+    automated pass (needs-triage, or a type with no priority) never fill a batch."""
     data = json.loads(gh("issue", "list", "-R", repo, "--state", "open", "--limit", "500",
                          "--json", "number,labels"))
-    numbers = [i["number"] for i in data
-               if not any(l["name"].startswith("priority:") for l in i["labels"])]
-    return sorted(numbers)[:limit]
+    candidates = sorted(i["number"] for i in data
+                        if not any(l["name"].startswith("priority:") for l in i["labels"]))
+    numbers = []
+    for number in candidates:
+        if len(numbers) == limit:
+            break
+        if skip_reason(fetch_issue(repo, number)) is None:
+            numbers.append(number)
+    return numbers
 
 
 def ensure_labels(repo: str, config: dict) -> None:
@@ -535,12 +567,15 @@ def ensure_labels(repo: str, config: dict) -> None:
 
 def apply_plan(repo: str, plan: Plan) -> None:
     # Re-read the issue: a human may have set a priority since the classify job read it.
+    # The classify job already decided whether a retry was due, so allow it here.
     fresh = fetch_issue(repo, plan.number)
-    if (why := skip_reason(fresh)):
+    if (why := skip_reason(fresh, retry=True)):
         print(f"#{plan.number}: skipped at apply time ({why})")
         return
     if plan.add_labels:
         gh("issue", "edit", str(plan.number), "-R", repo, "--add-label", ",".join(plan.add_labels))
+    if plan.remove_labels:
+        gh("issue", "edit", str(plan.number), "-R", repo, "--remove-label", ",".join(plan.remove_labels))
     if plan.assignee and not fresh.assignees:
         try:
             gh("issue", "edit", str(plan.number), "-R", repo, "--add-assignee", plan.assignee)
@@ -566,7 +601,7 @@ def run_classify(args) -> int:
     plans, failed = [], 0
     for number in numbers:
         issue = fetch_issue(args.repo, number)
-        if (why := skip_reason(issue)):
+        if (why := skip_reason(issue, retry=args.retry)):
             print(f"#{number}: skipped ({why})")
             continue
         try:
@@ -622,6 +657,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--limit", type=int, default=20, help="cap for --all")
     c.add_argument("--dry-run", action="store_true", help="print the plan, write no file")
     c.add_argument("--out", help="where to write the plan (JSON)")
+    c.add_argument("--retry", action="store_true",
+                   help="the issue was edited: retry it if it is at needs-triage")
     a = sub.add_parser("apply", help="check the plan and write it to GitHub; no model")
     a.add_argument("--plan", required=True)
     args = ap.parse_args(argv)
