@@ -34,7 +34,10 @@ user ─> REPL ─> command model (local) ─> policy gate ─> persistent bash 
   while a command runs. Sudo passthrough additionally stops capture (ADR-0015).
 - **Quarantined reader**: a separate request to the same model server that reads raw
   untrusted text and returns only fixed choices and validated names (ADR-0017, spec
-  `reader-schema/v1`). The command model never sees the raw text it read.
+  `reader-schema/v1`). The command model never sees the raw text it read. Built in
+  `nl_shell.reader` (#61), not yet wired into `?why` (#14) or fix-on-failure (#17): its
+  request names its own schema (`reader_v1`), separate from the command model's
+  `proposal_v1`, and uses its own prompt (`targets/<target>/prompts/reader.yaml`).
 - **Intent classifier**: a tiny local model that routes plain input to "bash" or "natural
   language".
 - **Installer**: GPU detection (CUDA; Vulkan by default on AMD, ROCm opt-in; CPU, ADR-0019),
@@ -153,6 +156,13 @@ Trusted:
   `pty-protocol/v1` §6).
 - **Untrusted text never becomes trusted**: reader output is untrusted, retrieved history
   is at most local-reference, and tainted turns aren't retrieved (ADR-0016, ADR-0017).
+  The reader's answer is rejected whole, never repaired, on any schema failure (extra
+  key, wrong type, off-enum `category`, a name failing its pattern, too many names).
+  A `missing` or `unit` name that passes is kept only if a lookup the caller passes in
+  finds it, never `$PATH`; those lookups must be local and read-only (package index,
+  command-provider data, unit files), and the real ones come with #14/#17. The only text
+  the reader hands on is built from nl-shell's templates and the kept names
+  (reader-schema/v1).
 - **Model output is never piped into the shell without going through the gate.**
 - **The command model and the reader have no network**; the model server listens only on
   a `0600` Unix socket (ADR-0018).
