@@ -72,5 +72,5 @@ Python package `nl_shell` under `src/`, tests under `tests/`, run with `python3 
 |---|---|---|
 | `nl_shell.cli` | Entry point (`nl-shell`, `python -m nl_shell`) | built (M0.1) |
 | `nl_shell.repl` | The read loop; exit commands | built (M0.1) |
-| `nl_shell.router` | Input router: heuristic command vs. natural language (first token is on `$PATH` or a bash builtin); the M3 classifier keeps it as its fallback | built (M0.7) |
+| `nl_shell.router` | Input router: heuristic command vs. natural language (first token is on `$PATH` or a bash builtin, and the line does not read as an English sentence: an unbalanced `'`, or 4+ plain words with a function word like "the" or "in"); the M3 classifier keeps it as its fallback | built (M0.7) |
 | PTY session, state capture, policy gate, confirm UI, model backend, prefix modes, session log | — | *(planned, M0.2–M0.10)* |
