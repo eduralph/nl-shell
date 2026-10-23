@@ -238,6 +238,24 @@ class Skip(unittest.TestCase):
         self.assertIsNone(tp.skip_reason(issue()))
 
 
+class Backfill(unittest.TestCase):
+    """The back-fill limit counts only issues that will be triaged (Codex P1 on #944)."""
+
+    def test_already_triaged_issues_do_not_fill_the_batch(self) -> None:
+        listed = [{"number": n, "labels": []} for n in range(1, 8)]
+        listed.append({"number": 8, "labels": [{"name": "priority:P2"}]})
+        # 1-3 already had their one pass and stay at needs-triage; 4-7 are fresh.
+        seen = {n: issue(number=n, triage_count=1, labels={"needs-triage"}) for n in (1, 2, 3)}
+        old_gh, old_fetch = tp.gh, tp.fetch_issue
+        tp.gh = lambda *args, **kw: json.dumps(listed)
+        tp.fetch_issue = lambda repo, n: seen.get(n) or issue(number=n)
+        try:
+            self.assertEqual(tp.open_untriaged("o/r", 2), [4, 5])
+            self.assertEqual(tp.open_untriaged("o/r", 20), [4, 5, 6, 7])
+        finally:
+            tp.gh, tp.fetch_issue = old_gh, old_fetch
+
+
 class ClearsNeedsTriage(unittest.TestCase):
     def test_a_placed_priority_clears_needs_triage(self) -> None:
         p = plan(i=issue(labels={"needs-triage"}))
