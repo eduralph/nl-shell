@@ -150,7 +150,11 @@ Trusted:
 - **Background output can't reach the screen during a confirm.** Between commands, PTY
   output from background jobs is buffered and shown only outside a confirm, under
   `[background output]`; it is untrusted and never enters the state block (spec
-  `pty-protocol/v1` §6).
+  `pty-protocol/v1` §6). Built so far (#120): the session keeps reading the PTY between
+  commands, holds what arrives in a 64 KiB buffer with a dropped-byte count, never writes
+  it to the terminal and never puts it in a command's result; it hands the block to its
+  caller only on request. Not built yet: the "background output waiting" notice in the
+  confirm (#74) and showing the block above the prompt through the output filter (#78).
 - **Untrusted text never becomes trusted**: reader output is untrusted, retrieved history
   is at most local-reference, and tainted turns aren't retrieved (ADR-0016, ADR-0017).
 - **Model output is never piped into the shell without going through the gate.**
@@ -266,6 +270,12 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
     and nl-shell sees records out of order or an `H` that differs from the baseline. The
     session stays degraded until `restart()`. This is the race `Session.interrupt()`
     already warns about, now open to any keypress; nl-shell alone cannot close it.
+  - **Some background output is dropped, not shown** (#120). Between commands the session
+    counts as background output only what the PTY gives once bash is seen waiting for its
+    next line (plus at most 50 ms for the prompt still on its way); the bytes before that
+    are the prompt and are dropped. A background byte written in that short time, or while
+    bash never waits on the terminal (fd 0 redirected), is dropped with them, so the user
+    does not see it. It never reaches the screen or a command's result.
   - **Other evasions of the hooks** are under review (#145).
 
   #78 MUST NOT wire the session to confirmed commands until each of #145, #147, #148, #149 and #150 is fixed or a human has accepted it in writing as a known risk for #78, and the output rendering filter (OSC 52, terminal queries) is applied to the §6 mirror.
