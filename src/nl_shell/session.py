@@ -540,6 +540,26 @@ class _Background:
         self._lock = threading.Lock()
         self._data = bytearray()
         self._dropped = 0
+        # Control records the reader read up to the command's E (_background_loop), for
+        # the next run to feed to the tracker; None in place of bytes marks EOF.
+        self._control: list[bytes | None] = []
+
+    def hold_control(self, data: bytes) -> bool:
+        """Keep ``data`` read from the control channel (``b""`` is EOF). True once the
+        ``E`` record is among the bytes held, or the channel closed."""
+        with self._lock:
+            if not data:
+                self._control.append(None)
+                return True
+            self._control.append(data)
+            held = b"".join(c for c in self._control if c is not None)
+        return held.startswith(b"E\n") or b"\nE\n" in held
+
+    def take_control(self) -> list[bytes | None]:
+        """The control reads held since the last call, in order (``None`` is EOF)."""
+        with self._lock:
+            control, self._control = self._control, []
+        return control
 
     def add(self, chunk: bytes) -> None:
         with self._lock:
@@ -651,6 +671,7 @@ class Session:
         """End bash (and its jobs, via SIGHUP) and release every descriptor. Background
         output still waiting stays takeable."""
         self._stop_background()  # before the PTY fd is closed and its number reused
+        self._background.take_control()  # this bash's records; a restart starts afresh
         proc, self._proc = self._proc, None
         if proc is not None:
             try:
@@ -820,8 +841,9 @@ class Session:
         waiting for a line after a command (blocked reading fd 0, as the prompt rule
         reads it, in a wait with no timeout, plus a quiet time of at most
         ``_PROMPT_SETTLE_MAX`` for the prompt still on its way through the PTY) up to the
-        next paste. After an exception in ``run`` this holds too: what the interrupted
-        command still prints comes before that moment. Bytes before that moment
+        next paste, and only once the command's ``E`` is in. After an exception in
+        ``run`` this holds too: what the interrupted command still prints, and the stdin
+        drain before ``E``, come before that moment. Bytes before that moment
         are the prompt and the user's prompt hook and are dropped. Known limit: a
         background byte written in that short time is dropped as well; so is one written
         while bash never waits on the terminal (fd 0 redirected).
@@ -834,6 +856,12 @@ class Session:
         if self._proc is None:
             return
         self._background.armed = False
+        # After an exception mid-command bash has not written E yet; the reader then waits
+        # for it before it asks whether bash waits for a line (_background_loop).
+        ctl = None
+        if self._ctl_open and self._tracker.phase in (Phase.SENT, Phase.RUNNING,
+                                                      Phase.SNAPSHOT):
+            ctl = self._ctl
         wake_r, wake_w = os.pipe()
         # The thread holds the session only weakly (_background_loop), so a session
         # dropped without close() is still collected and its PtyProcess ends bash. The
@@ -842,7 +870,7 @@ class Session:
         stop = threading.Event()
         thread = threading.Thread(
             target=_background_loop,
-            args=(weakref.ref(self), self._proc.fd, wake_r, stop, self._background),
+            args=(weakref.ref(self), self._proc.fd, wake_r, stop, self._background, ctl),
             name="nl-shell-background-output",
             daemon=True,
         )
@@ -892,6 +920,8 @@ class Session:
         try:
             # The last prompt is dropped; what a background job wrote since is kept.
             self._drain_pty()
+            # Records the reader read after an exception mid-command come first, in order.
+            self._feed_held_control()
             # A record that arrived after the last E is out of order; the session must
             # degrade before bash gets the next command (§4.2).
             self._drain_control()
@@ -1138,8 +1168,10 @@ class Session:
 
     def _waiting_for_key(self) -> bool:
         """As :meth:`_reading_terminal`, and the wait has no timeout: readline's wait for
-        a key, after the prompt is written. bash 5.3 first waits on fd 0 with a timeout
-        (about 50 ms) and writes the prompt only after it (§6.6)."""
+        a key, after the prompt is written. Before the prompt, ``__nls_snap``'s stdin
+        drain (``read -t 0.05``) waits on fd 0 with a timeout on bash 5.2 and later; on
+        bash 5.1 it blocks in a plain ``read(0, …)`` under an alarm, which this cannot
+        tell from readline, so the reader only asks after the command's ``E`` (§6.6)."""
         if not self._reading_terminal():
             return False
         path = self._syscall_path()
@@ -1379,6 +1411,15 @@ class Session:
             if self._background.armed:
                 self._background.add(chunk)
 
+    def _feed_held_control(self) -> None:
+        """Feed the tracker the control records the reader thread held (§6.6)."""
+        for data in self._background.take_control():
+            if data is None:
+                self._ctl_open = False
+                self._tracker.eof()
+            else:
+                self._tracker.feed(data)
+
     def _drain_control(self) -> None:
         """Feed the tracker whatever the control channel holds right now."""
         while self._ctl_open and not self._tracker.degraded and _select([self._ctl], 0):
@@ -1475,12 +1516,20 @@ def _background_loop(
     wake: int,
     stop: threading.Event,
     background: _Background,
+    ctl: int | None = None,
 ) -> None:
     """The reader thread (§6.6): until woken, read the PTY. Before bash is seen waiting for
     a line the bytes are the prompt and the prompt hook's output and are dropped (as the
     end of ``Session.run`` always dropped them); from then on they are background output.
     It never writes to the PTY (§5.3) and never touches the protocol state: on EOF it just
     ends, and the next ``run`` reads the EOF and degrades.
+
+    ``ctl`` is the control channel when the command's ``E`` has not been read yet (a
+    ``run`` that ended in an exception). Bash is not asked whether it waits for a line
+    before that ``E``: the stdin drain before it (``__nls_snap``'s ``read -t``) blocks
+    in a plain ``read(0, …)`` on bash 5.1, the same reading as readline's wait for a key.
+    The records read are kept, unparsed, in ``background`` for the next ``run`` to feed
+    to the tracker in order; reading stops at ``E``.
 
     It holds the session only through ``ref``, and only while it asks whether bash waits
     for a line, so a session dropped without ``close()`` is still collected (and bash
@@ -1489,7 +1538,7 @@ def _background_loop(
     seen: float | None = None  # when bash was first seen waiting for a line
     quiet_until = 0.0
     while True:
-        if not background.armed:
+        if not background.armed and ctl is None:
             now = time.monotonic()
             if seen is None:
                 if _bash_waiting_for_key(ref):
@@ -1499,9 +1548,15 @@ def _background_loop(
                 background.armed = True
         if stop.is_set():
             return
-        ready = _select([fd, wake], None if background.armed else _PROMPT_POLL)
+        if ctl is None:
+            ready = _select([fd, wake], None if background.armed else _PROMPT_POLL)
+        else:
+            ready = _select([fd, wake, ctl], None)
         if wake in ready:
             return
+        if ctl is not None and ctl in ready:
+            if background.hold_control(os.read(ctl, 65536)):
+                ctl = None  # E is in (or the channel closed): the drain is over
         if fd not in ready:
             continue
         try:
