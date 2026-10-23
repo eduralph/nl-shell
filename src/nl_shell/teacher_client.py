@@ -5,7 +5,9 @@ makes) to an OpenAI-compatible ``/v1/chat/completions`` endpoint, as served by l
 ``llama-server`` or by vLLM, and returns ``choices[0].message.content`` as raw text. It
 never parses, repairs or retries the answer: the REPL hands it to the one strict
 ``proposal/v1`` parser (``nl_shell.proposal``, ADR-0018 §3). The request asks for
-constrained decoding with ``proposal.SCHEMA`` itself, never a copy. No API key is sent.
+constrained decoding with ``proposal.SCHEMA`` itself, never a copy, unless the caller names
+another schema (``nl_shell.backend.ResponseSchema``; the quarantined reader sends
+``reader.RESPONSE_SCHEMA``). No API key is sent.
 
 The endpoint is a Unix socket (``Endpoint("unix", path)``; ``path=None`` means there is no
 default socket, so every request fails as "isn't running") or an ``http://`` /
@@ -61,7 +63,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from nl_shell import proposal, render
-from nl_shell.backend import BackendError
+from nl_shell.backend import BackendError, ResponseSchema
 from nl_shell.prompts import Message
 
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -491,8 +493,12 @@ class TeacherClient:
         self.max_response_bytes = max_response_bytes
         self.model = model
 
-    def request_body(self, messages: Sequence[Message]) -> dict[str, Any]:
-        """The JSON document posted for one model input."""
+    def request_body(
+        self, messages: Sequence[Message], *, schema: ResponseSchema | None = None
+    ) -> dict[str, Any]:
+        """The JSON document posted for one model input; ``schema=None``: proposal/v1."""
+        if schema is None:
+            schema = ResponseSchema(SCHEMA_NAME, proposal.SCHEMA)
         body: dict[str, Any] = {
             "messages": [
                 {"role": message.role, "content": message.content}
@@ -501,9 +507,9 @@ class TeacherClient:
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": SCHEMA_NAME,
+                    "name": schema.name,
                     "strict": True,
-                    "schema": proposal.SCHEMA,
+                    "schema": schema.schema,
                 },
             },
         }
@@ -511,7 +517,9 @@ class TeacherClient:
             body["model"] = self.model
         return body
 
-    def complete(self, messages: Sequence[Message]) -> str:
+    def complete(
+        self, messages: Sequence[Message], *, schema: ResponseSchema | None = None
+    ) -> str:
         """The raw ``message.content`` for one model input; a ``BackendError`` if none."""
         exchange = _Exchange(self.timeout_s)
         result: dict[str, Any] = {}
@@ -519,7 +527,8 @@ class TeacherClient:
 
         def work() -> None:
             try:
-                result["content"] = self._post(messages, exchange)
+                body = self.request_body(messages, schema=schema)
+                result["content"] = self._post(json.dumps(body).encode("utf-8"), exchange)
             except BaseException as exc:  # handed to the caller, mapped there
                 result["error"] = exc
             finally:
@@ -561,8 +570,8 @@ class TeacherClient:
             return TransportError(f"TLS failed: {_describe(exc)}")
         return TransportError(_describe(exc))
 
-    def _post(self, messages: Sequence[Message], exchange: _Exchange) -> str:
-        """Connect, send, read and decode. Runs in the worker thread."""
+    def _post(self, payload: bytes, exchange: _Exchange) -> str:
+        """Send ``payload`` (the encoded request body), read and decode. Worker thread."""
         conn: http.client.HTTPConnection
         if self.endpoint.kind == "unix":
             if self.endpoint.address is None:
@@ -573,7 +582,6 @@ class TeacherClient:
             target = http_target(self.endpoint)
             path = target.path
             conn = _TcpConnection(target, exchange)
-        payload = json.dumps(self.request_body(messages)).encode("utf-8")
         try:
             conn.connect()
             exchange.arm()
