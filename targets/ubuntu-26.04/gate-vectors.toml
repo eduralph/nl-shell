@@ -1,0 +1,79 @@
+# Policy-gate conformance vectors for the ubuntu-26.04 target
+# (docs/design/specs/policy-gate/v1.md, Conformance). Loaded by nl_shell.gate.vectors.
+#
+# This file holds the rows landed so far: the shell-layer rows of #196. It is not the
+# complete set the spec's Conformance section asks for; it becomes complete only when
+# #192 (live-session resolution) lands. #197 and #198 add their rows here.
+#
+# Keys: command, origin ("proposal" | "typed"), rejected; class (required unless
+# rejected, absent when rejected); optional reason (a substring some reason must
+# contain), label (the model's label) and row (the spec's row number).
+
+[[vector]]
+row = 7
+command = "PAGER=sh git log"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "prefix assignment"
+
+[[vector]]
+row = 13
+command = "LD_PRELOAD=./x.so ls"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "prefix assignment"
+
+[[vector]]
+row = 14
+command = "cat </dev/tcp/example.org/80"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "/dev/tcp"
+
+[[vector]]
+row = 15
+command = "ls > ~/.bashrc"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "output redirection"
+
+[[vector]]
+row = 16
+command = "$'\\x72m' -rf ~"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "command word is not a literal"
+
+[[vector]]
+row = 23
+command = "SUDO_PROMPT=x sudo true"
+origin = "typed"
+rejected = true
+reason = "SUDO_"
+
+[[vector]]
+row = 25
+command = "echo hi >&3"
+origin = "typed"
+rejected = true
+reason = "redirection rejected"
+
+[[vector]]
+row = 30
+command = "ls ‮txt.exe"
+origin = "proposal"
+rejected = true
+reason = "hidden character"
+
+[[vector]]
+row = 31
+command = "if true; then"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "unparseable"
