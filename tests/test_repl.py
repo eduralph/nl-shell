@@ -48,11 +48,12 @@ def make_executable(path):
 
 @pytest.fixture
 def fake_path(tmp_path, monkeypatch):
-    """``$PATH`` holding only fake ``ls``, ``git`` and ``find``, so routing does not
-    depend on what the host has installed. Returns the directory."""
+    """``$PATH`` holding only fake ``ls``, ``git``, ``find``, ``watch``, ``who``,
+    ``free``, ``sort`` and ``grep``, so routing does not depend on what the host has
+    installed. Returns the directory."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name in ("ls", "git", "find"):
+    for name in ("ls", "git", "find", "watch", "who", "free", "sort", "grep"):
         make_executable(bin_dir / name)
     monkeypatch.setenv("PATH", str(bin_dir))
     return bin_dir
@@ -90,15 +91,43 @@ def test_input_is_not_run_yet(fake_path):
     [
         ("ls -la", COMMAND),
         ("git status", COMMAND),
-        # Known heuristic limitation, pinned on purpose: English that starts with a
-        # command name routes as a command. The M3 classifier fixes this.
-        ("find large files in my home", COMMAND),
         ("cd /tmp", COMMAND),  # bash builtin, not on $PATH
         ("export FOO=1", COMMAND),  # bash builtin, not on $PATH
         ("  ls", COMMAND),
         ("show disk usage", NATURAL_LANGUAGE),
         ("what's using port 80", NATURAL_LANGUAGE),  # unbalanced quote must not raise
         ("frobnicate the widgets", NATURAL_LANGUAGE),
+        # English that starts with a command name (the English-sentence rule).
+        ("find large files in my home", NATURAL_LANGUAGE),  # function words
+        ("find what's using port 80", NATURAL_LANGUAGE),  # unbalanced quote
+        ("watch the logs for errors", NATURAL_LANGUAGE),  # function words
+        ("who is logged in", NATURAL_LANGUAGE),  # 4 words, "is", "in"
+        ("kill the process on port 8080", NATURAL_LANGUAGE),  # builtin, function words
+        ("find . -name '*.py'", COMMAND),  # option, quotes, no function word
+        ("ls my files", COMMAND),  # only 3 words
+        ("free -h", COMMAND),  # option
+        ("echo all is well in the world", COMMAND),  # echo's operands are free text
+        ("sort users.txt", COMMAND),  # only 2 words
+        ("echo it's fine", NATURAL_LANGUAGE),  # quote signal beats the echo rule
+        ('git commit -m "wip', COMMAND),  # an unclosed " is not the quote signal
+        ("grep 'hello in world' logfile", COMMAND),  # a single-quoted word is quoting
+        ("echo hello # it's a comment", COMMAND),  # an apostrophe in a comment
+        ("git log --oneline # it's long", COMMAND),  # the same, no echo
+        ("grep it's a test file", NATURAL_LANGUAGE),  # an apostrophe inside a word
+        ("find who's in the 'logs' dir", NATURAL_LANGUAGE),  # odd count: apostrophe
+        # Each line below reads as English on every count but one, so each pins a
+        # single part of the rule.
+        ("printf the answer is 42", COMMAND),  # printf's operands are free text
+        ("find the big files -size +1G", COMMAND),  # a word starts with "-"
+        ("find big files in ~/src", COMMAND),  # metacharacters "~" and "/"
+        ("grep the in file|less", COMMAND),  # metacharacter "|"
+        ('grep "the files in here', COMMAND),  # metacharacter '"'
+        ("git push origin main", COMMAND),  # 4 plain words, no function word
+        ("grep it\\'s x y", COMMAND),  # a "\" turns the quote signal off
+        ("git commit -m \"it's\"", COMMAND),  # a '"' turns the quote signal off
+        # The quote signal is checked before the "-" and metacharacter rule, so it wins.
+        ("find . -name it's", NATURAL_LANGUAGE),  # beats the "-" word rule
+        ("find what's in ~/src", NATURAL_LANGUAGE),  # beats the metacharacter rule
     ],
     ids=lambda value: ROUTE_NAMES.get(value, value),
 )

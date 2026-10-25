@@ -1,19 +1,38 @@
 """The M0 input router: a heuristic that tells shell commands from natural language.
 
-M0.7 placeholder. If the first token of the input is a bash builtin or an executable
-(found on ``$PATH``, or named by a path containing ``/``), the input is a command;
-otherwise it is natural language. The M3 intent classifier replaces this and keeps it
-as its fallback, so it stays a unit of its own with no REPL dependency.
+M0.7 placeholder. If the first token of the input is not a bash builtin or an
+executable (found on ``$PATH``, or named by a path containing ``/``), the input is
+natural language. If it is, the input is a command, unless it reads like English:
 
-Known limitation, on purpose: English that starts with a command name ("find large
-files in my home") routes as a command. Bash keywords (``if``, ``for``…), leading
-variable assignments, aliases and shell functions are not recognised.
+- An unbalanced single quote is English on its own: the line, without a shell comment
+  (``#`` at the start of a word, outside quotes), holds an odd number of ``'``, no ``"``
+  and no ``\\`` ("find what's using port 80", "echo it's fine").
+- A single-quoted word (a ``'…'`` span that starts and ends at a word boundary, as in
+  ``grep 'hello in world' log``) is shell quoting, so the line is a command.
+- Otherwise the line is English when all of these hold: the first token is not
+  ``echo`` or ``printf`` (their operands are free text); the line has at least 4
+  words; no word starts with ``-`` and the line holds no shell metacharacter (any of
+  ``|&;<>$*=(){}[]~/``, a backtick or a double quote); and at least one word, in
+  lower case, is a common English function word (``the``, ``in``, ``my``, ``is``…).
+
+A "word" here is an item of ``text.split()``, a plain whitespace split, so the rule is
+defined even on lines shlex cannot lex. A misroute is a usability cost, not a safety
+one: a command still has to pass the gate, and ``\\cmd`` always forces bash.
+
+The M3 intent classifier replaces this and keeps it as its fallback, so it stays a unit
+of its own with no REPL dependency.
+
+Known limitations: short English ("ls my files"), English with no function word, and
+English holding a metacharacter ("find big files in ~/src") still route as a command.
+Bash keywords (``if``, ``for``…), leading variable assignments, aliases and shell
+functions are not recognised.
 """
 
 from __future__ import annotations
 
 import enum
 import os
+import re
 import shlex
 import shutil
 
@@ -53,15 +72,76 @@ def is_executable_file(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+# Commands whose operands are free text, so English after them is still a command.
+FREE_TEXT_COMMANDS = frozenset({"echo", "printf"})
+
+# Characters that make a line shell rather than English.
+SHELL_METACHARACTERS = frozenset('|&;<>$*=(){}[]~/`"')
+
+# Common English function words: one of them in a long, plain line marks a sentence.
+FUNCTION_WORDS = frozenset(
+    """
+    a an the my me all any some this that these those which what who how in on of for
+    from to with by is are was were than
+    """.split()
+)
+
+
+# A '…' span that starts and ends at a word boundary: shell quoting, not apostrophes.
+SINGLE_QUOTED_WORD = re.compile(r"(?:^|\s)'[^']*'(?=\s|$)")
+
+
+def _strip_comment(text: str) -> str:
+    """``text`` without its shell comment: from a ``#`` that starts a word, outside
+    quotes, to the end. An unclosed quote runs to the end, so it hides no comment."""
+    quote = ""
+    for i, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (i == 0 or text[i - 1].isspace()):
+            return text[:i]
+    return text
+
+
+def _has_unbalanced_single_quote(text: str) -> bool:
+    """An odd number of ``'``, no ``"`` and no ``\\``: an apostrophe, not quoting."""
+    return text.count("'") % 2 == 1 and '"' not in text and "\\" not in text
+
+
+def _reads_like_english(token: str, text: str) -> bool:
+    """Whether a line whose first token is a command is really an English sentence."""
+    if _has_unbalanced_single_quote(_strip_comment(text)):
+        return True
+    if token in FREE_TEXT_COMMANDS:
+        return False
+    if SINGLE_QUOTED_WORD.search(text):
+        return False
+    words = text.split()
+    if len(words) < 4:
+        return False
+    if any(word.startswith("-") for word in words):
+        return False
+    if any(char in SHELL_METACHARACTERS for char in text):
+        return False
+    return any(word.lower() in FUNCTION_WORDS for word in words)
+
+
+def _is_command_name(token: str) -> bool:
+    if token in BASH_BUILTINS:
+        return True
+    if "/" in token:
+        return is_executable_file(token)
+    return shutil.which(token) is not None
+
+
 def route(text: str) -> Route:
     """Route one input line. ``$PATH`` is read on every call, never cached."""
     token = first_token(text)
-    if not token:
+    if not token or not _is_command_name(token):
         return Route.NATURAL_LANGUAGE
-    if token in BASH_BUILTINS:
-        return Route.COMMAND
-    if "/" in token:
-        return Route.COMMAND if is_executable_file(token) else Route.NATURAL_LANGUAGE
-    if shutil.which(token) is not None:
-        return Route.COMMAND
-    return Route.NATURAL_LANGUAGE
+    if _reads_like_english(token, text):
+        return Route.NATURAL_LANGUAGE
+    return Route.COMMAND
