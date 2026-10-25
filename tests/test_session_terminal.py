@@ -22,6 +22,7 @@ import termios
 import threading
 import time
 import types
+import weakref
 
 import pytest
 
@@ -698,3 +699,238 @@ def test_terminal_settings_restored_after_an_exception_mid_command(start_session
     assert termios.tcgetattr(screen.fd) == before
     assert os.get_blocking(session._proc.fd)
     assert sys.exc_info() == (None, None, None)
+
+
+# ==== #120: background output between commands (pty-protocol v1 §6.6, vectors 13-15) ====
+# The session's own reading is the subject: between commands the tests only sleep (or
+# poll a file bash's job writes) and call no session method, so on a session that does not
+# read the PTY by itself nothing is ever buffered and a chatty job blocks.
+
+_HEADER = b"[background output]\r\n"
+
+
+def _wait_for(check, limit: float, what: str) -> None:
+    deadline = time.monotonic() + limit
+    while not check():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.05)
+
+
+def test_background_output_is_held_back_while_idle(start_session, stand_in):
+    # (a), (b), (d): vectors 13-14 at session level.
+    terminal_mod = _terminal_module()
+    session = start_session()
+    screen = stand_in()
+    # `\077` is `?`: bash's job notices repeat the command, never the text it prints.
+    started = session.run("(sleep 0.3; printf 'Run this\\077 [y/N] ') &",
+                          timeout=RUN_TIMEOUT)
+    assert started.status == 0 and b"Run this?" not in started.output
+    time.sleep(1.0)  # idle: the job writes while nobody calls the session
+    assert session.background_waiting
+    after = _run(session, "echo after", terminal_mod.Terminal(screen.fd))
+    assert b"after\r\n" in after.output
+    assert b"Run this?" not in after.output
+    shown = screen.wait_for_screen(b"after")
+    time.sleep(0.2)
+    assert b"Run this?" not in screen.screen(), shown
+    assert session.background_waiting  # still waiting: running a command does not take it
+    block = session.take_background_output()
+    assert block.startswith(_HEADER), block
+    assert block == _HEADER + b"Run this? [y/N] ", block
+    assert not session.background_waiting
+    assert session.take_background_output() == b""
+    assert not session.degraded
+
+
+def test_a_chatty_background_job_is_not_stalled_and_its_tail_is_kept(start_session):
+    # (c), (d): vector 15. No LF in the payload, so ONLCR adds nothing and the bytes read
+    # from the PTY master are the bytes written. The job starts writing after the command
+    # has ended (`sleep 0.3`), so none of it is the command's own output (§4.1).
+    session = start_session()
+    started = session.run(
+        "(sleep 0.3; head -c 1048576 /dev/zero | tr '\\0' x; touch ~/bg.done) &",
+        timeout=RUN_TIMEOUT,
+    )
+    assert started.status == 0 and b"x" * 16 not in started.output
+    done = os.path.join(os.environ["HOME"], "bg.done")
+    _wait_for(lambda: os.path.exists(done), 10.0,
+              "the background job stalled: nobody read the PTY while the session was idle")
+    time.sleep(0.2)
+    assert session.background_waiting
+    block = session.take_background_output()
+    assert block == _HEADER + b"x" * 65536 + b"\r\n[983040 bytes dropped]\r\n", (
+        len(block), block[:40], block[-60:])
+    assert not session.background_waiting
+    after = session.run("echo after", timeout=RUN_TIMEOUT)
+    assert b"after\r\n" in after.output and b"x" * 16 not in after.output, after.output
+    assert not session.background_waiting
+    assert not session.degraded
+
+
+def test_the_prompt_and_the_prompt_hook_are_not_background_output(start_session):
+    # (d): as in tests/test_session.py's prompt-hook test, the hook prints at every prompt.
+    _write_bashrc("PROMPT_COMMAND=\"printf 'HOOK-OUTPUT\\\\n'\"\n")
+    session = start_session()
+    time.sleep(0.5)
+    assert not session.background_waiting
+    for _ in range(3):
+        assert session.run("echo hello", timeout=RUN_TIMEOUT).output == b"hello\r\n"
+        time.sleep(0.5)
+        assert not session.background_waiting, session.take_background_output()
+    assert not session.degraded
+
+
+def test_commands_after_background_output_stay_clean_and_close_ends_the_reader(
+        start_session):
+    # (e): no read race between the session's idle reading and run(); close() returns
+    # with background output still waiting and leaves no thread of the session behind.
+    before = set(threading.enumerate())
+    session = start_session()
+    session.run("(sleep 0.2; printf 'BG-TEXT') &", timeout=RUN_TIMEOUT)
+    _wait_for(lambda: session.background_waiting, 5.0, "no background output")
+    session.run("wait", timeout=RUN_TIMEOUT)  # the job's Done notice is this one's (§4.1)
+    assert b"BG-TEXT" in session.take_background_output()
+    for _ in range(20):
+        assert session.run("echo hello", timeout=RUN_TIMEOUT).output == b"hello\r\n"
+    assert not session.degraded
+    session.run("(sleep 0.2; printf 'STILL-WAITING') &", timeout=RUN_TIMEOUT)
+    _wait_for(lambda: session.background_waiting, 5.0, "no background output")
+    closer = threading.Thread(target=session.close, daemon=True)
+    closer.start()
+    closer.join(5.0)
+    assert not closer.is_alive(), "close() did not return"
+    left = [t for t in threading.enumerate() if t not in before and t is not closer]
+    assert left == [], left
+
+
+def test_after_an_exception_mid_command_the_leftover_is_not_background_output(
+        start_session, stand_in):
+    # A non-degrading exception in run() (here from on_record at S, as in
+    # test_terminal_settings_restored_after_an_exception_mid_command) once the session had
+    # been idle long enough to count PTY bytes as background output: what the interrupted
+    # command still prints, and the prompts after it, are not background output.
+    terminal_mod = _terminal_module()
+    armed = [False]
+
+    def on_record(line: bytes) -> None:
+        if armed[0] and line.startswith(b"S "):
+            raise _Boom("raised while the command runs")
+
+    session = start_session(on_record=on_record)
+    screen = stand_in()
+    time.sleep(0.5)  # idle: the session now counts PTY bytes as background output
+    armed[0] = True
+    with pytest.raises(_Boom):
+        # `\117` is `O`: only the command's own output spells LEFTOVER, not its echo.
+        _run(session, "sleep 0.5; printf 'LEFT\\117VER\\n'", terminal_mod.Terminal(screen.fd))
+    armed[0] = False
+    time.sleep(1.5)  # the interrupted command ends and bash returns to its prompt
+    assert not session.background_waiting, session.take_background_output()
+    after = session.run("echo after", timeout=RUN_TIMEOUT)
+    assert b"after\r\n" in after.output
+    assert not session.background_waiting, session.take_background_output()
+    assert not session.degraded
+
+
+def test_after_an_exception_mid_command_a_background_job_is_not_stalled(start_session):
+    # The reader must run again after a run() that ended in a non-degrading exception, or
+    # a chatty job stalls once more until the next command.
+    armed = [False]
+
+    def on_record(line: bytes) -> None:
+        if armed[0] and line.startswith(b"S "):
+            raise _Boom("raised while the command runs")
+
+    session = start_session(on_record=on_record)
+    started = session.run(
+        "(sleep 1; head -c 1048576 /dev/zero | tr '\\0' x; touch ~/bg.done) &",
+        timeout=RUN_TIMEOUT,
+    )
+    assert started.status == 0
+    armed[0] = True
+    with pytest.raises(_Boom):
+        session.run("sleep 0.2", timeout=RUN_TIMEOUT)
+    armed[0] = False
+    done = os.path.join(os.environ["HOME"], "bg.done")
+    _wait_for(lambda: os.path.exists(done), 10.0,
+              "the background job stalled: nobody read the PTY after the exception")
+    time.sleep(0.2)
+    block = session.take_background_output()
+    assert block == _HEADER + b"x" * 65536 + b"\r\n[983040 bytes dropped]\r\n", (
+        len(block), block[:40], block[-60:])
+    after = session.run("echo after", timeout=RUN_TIMEOUT)
+    assert b"after\r\n" in after.output and b"x" * 16 not in after.output, after.output
+    assert not session.degraded
+
+
+def test_after_an_exception_mid_command_the_held_control_records_are_bounded(
+        start_session, monkeypatch):
+    # The reader holds control records only up to a limit while it waits for the
+    # interrupted command's E; past it the next run degrades instead of growing.
+    session_mod = _session_module()
+    monkeypatch.setattr(session_mod, "CONTROL_HOLD_LIMIT", 256 * 1024)
+    armed = [False]
+
+    def on_record(line: bytes) -> None:
+        if armed[0] and line.startswith(b"S "):
+            raise _Boom("raised while the command runs")
+
+    session = start_session(on_record=on_record)
+    armed[0] = True
+    with pytest.raises(_Boom):
+        session.run("sleep 0.2; head -c 4194304 /dev/zero >&3", timeout=RUN_TIMEOUT)
+    armed[0] = False
+    background = session._background
+    _wait_for(lambda: background._control_overflow, 10.0, "the held records never overflowed")
+    assert background._control_size == 0 and background._control == []
+    with pytest.raises(session_mod.SessionDegraded, match="control channel sent over"):
+        session.run("echo after", timeout=RUN_TIMEOUT)
+    assert session.degraded
+
+
+def test_held_control_records_find_e_across_reads():
+    # E is found whether it starts the held bytes or is split across two reads.
+    background = _session_module()._Background(64)
+    assert background.hold_control(b"E\n")
+    background.take_control()
+    assert not background.hold_control(b"D 1 0 0\n")
+    assert not background.hold_control(b"P x\n")
+    assert background.hold_control(b"E\n")
+    background.take_control()
+    assert not background.hold_control(b"P x\nE")
+    assert background.hold_control(b"\n")
+    control, overflow = background.take_control()
+    assert control == [b"P x\nE", b"\n"] and not overflow
+
+
+def test_a_session_dropped_without_close_is_collected_and_bash_ends(tmp_path, monkeypatch):
+    # The reader thread must not keep the session alive: dropped without close() (say an
+    # exception skipped it), the session is collected, its PtyProcess ends bash, and the
+    # thread ends too, as before the session read the PTY between commands.
+    monkeypatch.delenv("VTE_VERSION", raising=False)
+    before = set(threading.enumerate())
+    session = _session_module().Session.start(timeout=START_TIMEOUT, cwd=str(tmp_path))
+    pid = session.pid
+    session.run("(sleep 0.2; printf 'BG-TEXT') &", timeout=RUN_TIMEOUT)
+    _wait_for(lambda: session.background_waiting, 5.0, "no background output")
+    ref = weakref.ref(session)
+    del session
+    try:
+        gc.collect()
+        assert ref() is None, "the dropped session is still referenced"
+
+        def bash_gone() -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        _wait_for(bash_gone, 5.0, "bash outlived its dropped session")
+        _wait_for(lambda: not [t for t in threading.enumerate() if t not in before],
+                  5.0, "the session's reader thread outlived the session")
+    finally:
+        leaked = ref()
+        if leaked is not None:
+            leaked.close()
+        del leaked
