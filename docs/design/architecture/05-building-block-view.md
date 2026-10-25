@@ -25,7 +25,7 @@ graph TB
         pty["PTY session<br/>persistent bash + sudo passthrough"]
         log["Session log + history write-back"]
     end
-    reader["Quarantined reader<br/>(separate process, no PTY)"]
+    reader["Quarantined reader<br/>(separate model request, no PTY)"]
     llama["llama.cpp<br/>GGUF student"]
     refdocs["Local reference index"]
 

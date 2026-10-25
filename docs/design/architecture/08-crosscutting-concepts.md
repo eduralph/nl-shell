@@ -116,6 +116,11 @@ and no network. This is the **dual-LLM pattern** (Willison, 2023) with constrain
 not CaMeL: it limits prompt injection to the choice of an enum value and a few existing
 names.
 
+The answer's schema and its validation are in
+[`specs/reader-schema/v1.md`](../specs/reader-schema/v1.md); `src/nl_shell/reader.py`
+sends the request (its own prompt, `prompts/reader.yaml` in the target folder) and rejects
+any answer that fails the schema, then drops names the local lookups don't confirm.
+
 ## 8.6 Input modes
 
 | Input | Behaviour |
