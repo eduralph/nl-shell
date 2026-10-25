@@ -14,6 +14,10 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "ptyprocess>=0.7",
     "PyYAML>=6",
+    # The policy gate's parser (spec policy-gate/v1 §1.2): pinned exactly, because the
+    # gate's rules depend on how this grammar reads bash.
+    "tree-sitter==0.26.0",
+    "tree-sitter-bash==0.25.1",
 ]
 
 [project.optional-dependencies]

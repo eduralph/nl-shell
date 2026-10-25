@@ -168,6 +168,31 @@ Trusted:
   the reader hands on is built from nl-shell's templates and the kept names
   (reader-schema/v1).
 - **Model output is never piped into the shell without going through the gate.**
+- **The gate assumes nothing is safe until it has proof** (`nl_shell.gate`, #196). Its
+  shell layer parses with the pinned tree-sitter-bash and holds six properties. (1) The
+  tree is trusted only with no `ERROR` or `MISSING` node and none of the features
+  tree-sitter-bash reads differently from bash (backslash-newline outside single quotes,
+  a here-doc delimiter that is not a plain or fully quoted word, `<<-`, two here-docs
+  started on one line, unquoted extglob openers, bash 5.3 `${ ` / `${|`); otherwise a
+  proposal is rejected, typed input is at least `mutating` ("unparseable"), every
+  redirect except the §2 exempt forms, here-docs and parsed here-strings is rejected,
+  and no stdin fact is kept. (2) Every named node is walked exactly once and every simple command
+  gives one invocation, checked on every classification; a node kind with no handler,
+  or a walk that misses a node, is decision C (`privileged`, rejected, "could not
+  class"). (3) Stdin is `terminal`, `pipe`, `file` or `literal` only in the listed
+  forms, else `unknown`, which consumers treat as the worst case; a command that can
+  change the shell's own stdin (`exec` with a redirect, `eval`, `source`, a non-literal
+  command word) makes every other command's stdin `unknown`; a word is literal only
+  when bash would expand nothing in it. (4) A redirect is accepted only with no
+  descriptor or a literal 0-2 and a target that is a dup or close of 0-2, a literal
+  path outside `/dev`, `/proc` and `/sys` with no `..` (apart from `/dev/null`,
+  `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, `/dev/tcp/…`, `/dev/udp/…`); every other
+  redirect is rejected, so fd 3 cannot be reached by a literal descriptor, a dup, a
+  `/dev/fd` or `/proc/*/fd` path, or a non-literal target. (5) Input over 8 KiB is
+  decision C before it is parsed, and the walk has a node and depth budget; any internal
+  error is decision C, and `classify` never raises. (6) No reason string carries a raw
+  control or hidden character from the input. The command layer, §7 and §8 are still
+  stubs that fail closed: every simple command is at least `mutating`.
 - **The command model and the reader have no network**; the model server listens only on
   a `0600` Unix socket (ADR-0018).
 - **Locally complete**: no telemetry and no outbound connection in the default config.
