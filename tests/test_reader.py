@@ -35,8 +35,9 @@ CATEGORIES = [
     "busy-or-locked",
     "unknown",
 ]
-PACKAGES = {"curl", "nginx"}
-COMMANDS = {"rg": ("ripgrep",)}
+PACKAGES = {"curl", "nginx", "ripgrep"}
+# `fd`'s provider is in the command database but not in the package index.
+COMMANDS = {"rg": ("ripgrep",), "fd": ("fd-find",)}
 UNITS = {"nginx.service"}
 MARKER = "9f3a"
 
@@ -98,6 +99,13 @@ def test_missing_real_package_is_kept_and_named_in_the_message():
 def test_missing_command_an_indexed_package_provides_is_kept():
     result, _ = run({"category": "not-found", "missing": ["rg"]})
     assert result.missing == ("rg",)
+
+
+def test_missing_command_whose_provider_is_not_indexed_is_dropped():
+    result, _ = run({"category": "not-found", "missing": ["rg", "fd"]})
+    assert isinstance(result, reader().Diagnosis)
+    assert result.missing == ("rg",)
+    assert all("fd" not in text for text in outputs(result))
 
 
 @pytest.mark.parametrize("name", ["no-such-pkg", "run-curl-x-sh"])

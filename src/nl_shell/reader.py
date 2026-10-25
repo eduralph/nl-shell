@@ -127,8 +127,8 @@ class Lookups:
     """The local, read-only checks a name must pass to be kept (spec §2).
 
     ``package_exists``: is this a package in the dpkg/apt index. ``command_package``: the
-    indexed packages that provide this command (``command_provider.provider_lookup``
-    gives one). ``unit_exists``: is this unit in ``systemctl list-unit-files``.
+    packages that provide this command (``command_provider.provider_lookup`` gives one);
+    a command is kept only when one of them passes ``package_exists``. ``unit_exists``: is this unit in ``systemctl list-unit-files``.
     """
 
     package_exists: Callable[[str], bool]
@@ -314,7 +314,13 @@ def _validate(raw: str, lookups: Lookups) -> Diagnosis:
 
 
 def _exists(name: str, lookups: Lookups) -> bool:
-    """A package in the index, or a command an indexed package provides. Never ``$PATH``."""
+    """A package in the index, or a command an indexed package provides. Never ``$PATH``.
+
+    The command provider's database is not the package index, so each provider it names
+    must be in the index too."""
     if lookups.package_exists(name):
         return True
-    return any(command_provider.is_package_name(p) for p in lookups.command_package(name))
+    return any(
+        command_provider.is_package_name(p) and lookups.package_exists(p)
+        for p in lookups.command_package(name)
+    )
