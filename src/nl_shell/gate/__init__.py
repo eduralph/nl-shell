@@ -229,6 +229,10 @@ def _redirects(tally: _Tally, layer: parse.ShellLayer) -> None:
 def _assignments(tally: _Tally, layer: parse.ShellLayer) -> None:
     for assignment in layer.assignments:
         name = assignment.name
+        if not name:
+            # `export "$x"`: bash assigns whatever name the expansion gives (§5).
+            tally.reject("declaration with an operand the gate cannot name")
+            continue
         if name in _SUDO_REJECTED:
             tally.reject(f"assignment to {name} is rejected")
         if assignment.role == "prefix" and not layer.untrusted:

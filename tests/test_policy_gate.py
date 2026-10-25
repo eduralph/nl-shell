@@ -203,6 +203,9 @@ REGRESSION: list[Case] = [
         for name in SESSION_NAMES
     ),
     Case("export PATH=./bin", "session-altering", False, "assignment to PATH"),
+    # A quoted declaration operand is still an assignment after quote removal.
+    Case("export 'PATH=/tmp/evil'", "session-altering", False, "assignment to PATH"),
+    Case('export "PATH"=/tmp/evil', "session-altering", False, "assignment to PATH"),
     # With only a redirect and no command word, the assignment stays in the shell.
     Case("PATH=/tmp/evil >/dev/null", "session-altering", False, "assignment to PATH"),
     Case("LD_PRELOAD=/tmp/x.so 2>/dev/null", "session-altering", False, "LD_PRELOAD"),
@@ -212,6 +215,12 @@ REGRESSION: list[Case] = [
     Case("SUDO_PROMPT=x sudo true", None, True, "SUDO_"),
     Case("SUDO_ASKPASS=/x sudo true", None, True, "SUDO_"),
     Case("export SUDO_PROMPT=x", None, True, "SUDO_"),
+    Case("export 'SUDO_PROMPT=x'", None, True, "SUDO_"),
+    Case("export 'SUDO_ASKPASS=x'", None, True, "SUDO_"),
+    Case('declare -x "SUDO_ASKPASS=/x"', None, True, "SUDO_"),
+    Case("export S'UDO_PROMPT'=x", None, True, "SUDO_"),
+    Case("export SUDO_'ASKPASS'=/x", None, True, "SUDO_"),
+    Case('export "$x"', None, True, "operand the gate cannot name"),
     # walk coverage
     Case("ls | wc; (pwd) && { id; }", "mutating", False, NA),
     Case("if a; then b; elif c; then d; else e; fi", "mutating", False, NA),
@@ -454,6 +463,8 @@ def test_rule3_stdin_sources():
     assert stdin_of("command exec <x; cat")["cat"][0] == "unknown"
     assert stdin_of("eval x; cat")["cat"][0] == "unknown"
     assert stdin_of("$x <f; cat")["cat"][0] == "unknown"
+    # A trap handler runs code the gate does not see before later commands.
+    assert stdin_of("trap 'exec <<<payload' DEBUG; cat")["cat"][0] == "unknown"
     # `exec` with no redirect does not, and neither does a bare redirect.
     assert stdin_of("exec; cat")["cat"] == ("terminal", None)
     assert stdin_of("PATH=x >/dev/null")[""][0] == "unknown"  # untrusted (MISSING)
@@ -559,6 +570,12 @@ def rule4_allows(fd: str, op: str, target: str) -> bool:
     path = target[1:] if target.startswith("~") else target
     if ".." in path.split("/"):
         return False
+    if target.startswith("~") or not target.startswith("/"):
+        # A relative or `~` target that may be a descriptor of 3 or more (`3`, `fd/3`).
+        parts = [p for p in path.split("/") if p]
+        if parts and parts[-1].isdigit() and int(parts[-1]) >= 3:
+            if len(parts) == 1 or parts[-2] == "fd":
+                return False
     if target.startswith("/"):
         norm = re.sub(r"/+", "/", target)
         if norm in ("/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr"):
@@ -617,6 +634,67 @@ def test_rule4_spec_rows_and_exempt_forms():
         assert result.reasons == (NA,), (redirect, result)
     for command in ("exec 3>&-", "{a[0]}>x", "{a[0]}>&-", "echo {fd}>x", "echo x 3>&1-"):
         assert classify(command).rejected, command
+
+
+def test_rule4_relative_targets_that_may_be_a_descriptor():
+    # With the cwd at /dev/fd (or ~ there), `>3` writes to fd 3, the control channel.
+    for command in (
+        "printf p >3",
+        "printf p >03",
+        "printf p 2>fd/3",
+        "cat <self/fd/4",
+        "printf p >~/3",
+        "cd /dev/fd && printf 'p\\n' >3",
+        "HOME=/dev/fd; printf 'p\\n' >~/3",
+    ):
+        check(Case(command, None, True, "descriptor 3 or higher"))
+    for command in ("printf p >2", "printf p >out/3", "printf p >3x", "printf p >~/f"):
+        assert not classify(command).rejected, command
+
+
+def test_rule4_relative_targets_after_the_cwd_moves():
+    moved = "the command moves where the gate cannot place it"
+    for command in (
+        "cd /dev && echo x >sda",
+        'cd "$d" && echo x >f',
+        "cd - && echo x >f",
+        "cd .. && echo x >f",
+        "popd; echo x >f",
+        "CDPATH=/dev; cd fd; echo x >f",
+        "HOME=/dev; echo x >~/sda",
+        "eval x; echo y >f",
+        "trap 'cd /dev' DEBUG; echo y >f",
+        "f() { cd /dev; }; f; echo y >sda",
+        "$cmd; echo y >f",
+        "while :; do echo y >f; cd /dev; done",
+    ):
+        check(Case(command, None, True, moved))
+    # A literal move outside /dev, /proc and /sys keeps relative targets placed; where
+    # the session's own cwd is, is the live layer's check (§8.1).
+    for command in (
+        "cd /tmp && echo x >out.txt",
+        "cd build && make >log",
+        "cd && echo x >f",
+        "cd -P /tmp && echo x >f",
+        "pushd /tmp; echo x >f",
+        "HOME=/home/u; echo x >~/f",
+        "cd /dev; echo x >/dev/null",
+        "eval x; echo y >/tmp/abs",
+    ):
+        assert not classify(command).rejected, command
+
+
+def test_single_bracket_test_redirects():
+    # tree-sitter-bash reads `>`/`<` inside `[ ]` as test operators; bash runs `[` as a
+    # command and performs them as redirections.
+    for command in ("[ x > /dev/fd/3 ]", "[ a < b ]", "[ -n x ] && [ y > z ]"):
+        for origin in ("typed", "proposal"):
+            check(Case(command, None, True, "inside [ ]", origin=origin))
+    parse = shell()
+    assert any("inside [ ]" in f for f in parse.shell_layer("[ x > y ]").untrusted)
+    # `[[ ]]` compares strings, and an escaped `\>` in `[ ]` is an argument.
+    for command in ("[[ a < b ]]", "[ a \\> b ]"):
+        assert not classify(command).rejected, command
 
 
 # --- Rule 5 --------------------------------------------------------------------------

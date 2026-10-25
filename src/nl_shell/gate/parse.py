@@ -16,7 +16,10 @@ of forms below. Anything else is handled as the worst case.
   checked against the tree on every walk; a miss is a ``GateFailure`` (decision C).
 - Rule 3 (``Stdin``, ``lex_word``): stdin sources and the literal flag are proven only
   through the forms listed there; anything else is ``unknown`` / not literal.
-- Rule 4 (``judge_redirect``): a redirect is accepted only in the listed safe forms.
+- Rule 4 (``judge_redirect``): a redirect is accepted only in the listed safe forms. A
+  target that is relative to the cwd or to ``~`` is accepted only when it cannot name a
+  descriptor of 3 or more and nothing in the input can change the cwd or ``HOME``
+  (``_unplaced_targets``); the session's own cwd is the live layer's to check (§8.1).
 - Rule 5: input over ``MAX_INPUT_BYTES`` is refused before it is parsed, and the walk has a
   total-work budget (``MAX_WORK`` nodes, ``MAX_DEPTH`` levels).
 """
@@ -156,6 +159,7 @@ class Redirect:
     display: str  # operator and target as written (to be escaped before display)
     heredoc_operator: bool  # its operator bytes are an unquoted `<<` in the text
     start: int
+    relative: bool = False  # an accepted file target placed by the cwd or by `~`
 
 
 @dataclass(frozen=True)
@@ -328,6 +332,8 @@ def judge_redirect(
     path, dotdot = _normal_path(text)
     if dotdot:
         return False, "target has a '..' component", False, False
+    if ("leading-tilde" in causes or not text.startswith("/")) and _may_be_descriptor(path):
+        return False, "target may be descriptor 3 or higher (relative to the cwd or ~)", False, False
     if "leading-tilde" not in causes and text.startswith("/"):
         if path in _DEV_NAMES:
             exempt = path == "/dev/null" and operator in _OUTPUT_FILE_OPERATORS
@@ -337,6 +343,25 @@ def judge_redirect(
         if any(path == tree or path.startswith(tree + "/") for tree in _SYSTEM_TREES):
             return False, "target is under /dev, /proc or /sys", False, False
     return True, "", False, False
+
+
+def _may_be_descriptor(path: str) -> bool:
+    """Whether a relative (or ``~``) target can name a descriptor of 3 or more: its last
+    component is a number of 3 or more, alone (``3``, with the cwd at ``/dev/fd``) or in
+    an ``fd`` directory (``fd/3``, ``self/fd/3``, ``dev/fd/3``)."""
+    parts = [p for p in path.lstrip("~").split("/") if p]
+    if not parts or not parts[-1].isdigit() or int(parts[-1]) < 3:
+        return False
+    return len(parts) == 1 or parts[-2] == "fd"
+
+
+def _is_relative_target(operator: str, target: Word | None, accepted: bool) -> bool:
+    """An accepted file target that the cwd or ``~`` places (not a dup of 0-2)."""
+    if not accepted or target is None:
+        return False
+    if operator in (">&", "<&") and re.fullmatch(r"[012]-?|-", target.text):
+        return False
+    return target.source.startswith("~") or not target.text.startswith("/")
 
 
 def _is_output(descriptor: str | None, operator: str, kind: str) -> bool:
@@ -410,6 +435,15 @@ def _heredoc_runs(source: bytes) -> list[tuple[int, int]]:
     return runs
 
 
+def _bracket_redirects(node: tree_sitter.Node) -> list[tree_sitter.Node]:
+    """The redirect-operator tokens inside a single-bracket test (``[ x > y ]``).
+    tree-sitter-bash reads them as test operators; bash runs ``[`` as a command, so for
+    bash they are redirections. ``[[ … ]]`` compares strings and is not affected."""
+    if node.type != "test_command" or not node.children or node.children[0].type != "[":
+        return []
+    return [n for n in _iter_nodes(node) if not n.is_named and n.type in REDIRECT_OPERATORS]
+
+
 def untrusted_features(tree: tree_sitter.Tree, source: bytes) -> tuple[str, ...]:
     """Rule 1. The features that make the tree untrusted (empty means trusted)."""
     root = tree.root_node
@@ -433,6 +467,8 @@ def untrusted_features(tree: tree_sitter.Tree, source: bytes) -> tuple[str, ...]
             heredocs.append(node)
         if not node.is_named and node.type == "<<-":
             note("here-doc with <<-")
+        if _bracket_redirects(node):
+            note("'<' or '>' inside [ ], which bash reads as a redirection")
     single, quoted = _masks(root, len(source))
     lines: dict[int, int] = {}
     for start, _ in _heredoc_runs(source):
@@ -591,6 +627,32 @@ def _error(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> Non
     _children(walker, node, ctx, depth, bound)
 
 
+def _test_command(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> None:
+    """``[ … ]``: each ``<``/``>`` inside is a redirection bash would perform, with a
+    target the gate did not judge, so it is recorded as rejected (Rule 1 also marks it)."""
+    for token in _bracket_redirects(node):
+        after = token.next_sibling
+        end = after.end_byte if after is not None else token.end_byte
+        walker.layer.redirects.append(
+            Redirect(
+                kind="loose",
+                descriptor=None,
+                operator=token.type,
+                target=None,
+                accepted=False,
+                why="'<' or '>' inside [ ], which bash reads as a redirection",
+                output=False,
+                exempt=False,
+                device_socket=False,
+                feed=None,
+                display=walker.span(token.start_byte, end),
+                heredoc_operator=False,
+                start=token.start_byte,
+            )
+        )
+    _children(walker, node, ctx, depth, bound)
+
+
 def _pipeline(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> None:
     stages, later = [], False
     for child in node.children:
@@ -693,6 +755,23 @@ def _simple(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> No
             result = walker.visit(child, replace(ctx, role=role), depth + 1)
             if isinstance(result, Assignment):
                 assignments.append(result)
+    if kind == "declaration":
+        # An operand that is not one `variable_assignment` node is still read by bash
+        # as `name=value` after quote removal (`export 'SUDO_PROMPT=x'`). Pieces with no
+        # space between them are one bash word (`export S'UDO_PROMPT'=x`).
+        operands: list[list] = []
+        for child in sorted(word_nodes, key=lambda n: n.start_byte):
+            if operands and operands[-1][-1].end_byte == child.start_byte:
+                operands[-1].append(child)
+            else:
+                operands.append([child])
+        for pieces in operands:
+            if len(pieces) == 1 and pieces[0].type == "variable_assignment":
+                continue
+            operand = _declared(walker.span(pieces[0].start_byte, pieces[-1].end_byte))
+            if operand is not None:
+                assignments.append(operand)
+                walker.layer.assignments.append(operand)
     for child in others + unread + [w for w in fd_words if w.is_named]:
         walker.visit(child, ctx, depth + 1)
     records: list[Redirect] = []
@@ -729,6 +808,24 @@ def _simple(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> No
             in_function=ctx.in_function,
         )
     )
+
+
+_DECLARED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=(.*)", re.S)
+
+
+def _declared(source: str) -> Assignment | None:
+    """A declaration operand that is not a ``variable_assignment`` node, as bash reads it
+    after quote removal: ``export 'SUDO_PROMPT=x'`` assigns ``SUDO_PROMPT``. An operand
+    whose name the gate cannot read (``export "$x"``) gives the name ``""``; a literal
+    option or plain name (``-x``, ``A``) gives ``None``."""
+    word = make_word(source)
+    match = _DECLARED.match(word.text)
+    if match is not None:
+        value = Word(text=match.group(2), literal=word.literal, source=source)
+        return Assignment(name=match.group(1), value=value, role="declaration")
+    if word.literal:
+        return None
+    return Assignment(name="", value=None, role="declaration")
 
 
 def _assignment(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()):
@@ -827,6 +924,7 @@ def _file_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Redirect]
         display=(descriptor or "") + walker.span(op_start, node.end_byte),
         heredoc_operator=walker.in_heredoc_run(op_start),
         start=node.start_byte,
+        relative=_is_relative_target(operator, target, accepted),
     )
     walker.layer.redirects.append(record)
     return [record]
@@ -934,6 +1032,7 @@ HANDLERS.update(
         ERROR_KIND: _error,
         "pipeline": _pipeline,
         "negated_command": _negated,
+        "test_command": _test_command,
         "redirected_statement": _redirected,
         "command": _simple,
         "declaration_command": _simple,
@@ -978,6 +1077,7 @@ def shell_layer(source: str) -> ShellLayer:
     walker = Walker(data, layer)
     walker.visit(tree.root_node, Ctx(stdin=TERMINAL), 0)
     _check_walk(tree, walker)
+    _unplaced_targets(layer)
     if layer.untrusted:
         # No stdin fact from a tree the gate does not trust.
         layer.invocations = [replace(i, stdin=UNKNOWN) for i in layer.invocations]
@@ -992,24 +1092,102 @@ def shell_layer(source: str) -> ShellLayer:
     return layer
 
 
-_SHELL_RUNNERS = ("eval", "source", ".")
-_BUILTIN_PREFIXES = ("command", "builtin")
+# Assignments that move where a relative or `~` redirect target lands.
+_PLACE_NAMES = ("HOME", "PWD", "OLDPWD")
+_CWD_CHANGERS = ("cd", "pushd")
 
 
-def _may_rewire_stdin(invocation: Invocation) -> bool:
-    """Whether ``invocation`` can change the stdin of the shell itself: ``exec`` with
-    any redirect, ``eval`` / ``source`` / ``.`` (code the gate does not see), or a command
-    word the gate cannot read. ``command`` and ``builtin`` in front are looked through."""
+def _placed(word: Word | None) -> bool:
+    """A literal directory that keeps relative targets out of ``/dev``, ``/proc`` and
+    ``/sys``: no ``..`` component, not ``-`` or ``+N``/``-N`` (the dir stack), and, when
+    absolute, not under those trees."""
+    if word is None or not word.literal or word.text[:1] in ("-", "+"):
+        return False
+    path, dotdot = _normal_path(word.text)
+    if dotdot:
+        return False
+    return not any(path == tree or path.startswith(tree + "/") for tree in _SYSTEM_TREES)
+
+
+def _cd_placed(invocation: Invocation, head: Word) -> bool:
+    """``cd``/``pushd`` with no operand (``$HOME``) or one operand ``_placed`` accepts,
+    after the options bash takes (``-L``, ``-P``, ``-e``, ``-@``)."""
+    words = list(invocation.words)
+    operands = words[words.index(head) + 1 :]
+    while operands and operands[0].literal and re.fullmatch(r"-[LPe@]+", operands[0].text):
+        operands.pop(0)
+    if operands and operands[0].literal and operands[0].text == "--":
+        operands.pop(0)
+    return not operands or (len(operands) == 1 and _placed(operands[0]))
+
+
+def _unplaced_targets(layer: ShellLayer) -> None:
+    """Rule 4: reject accepted relative and ``~`` targets when the input itself can move
+    the cwd or ``HOME`` somewhere the gate cannot place (``cd "$d" && echo x >f``,
+    ``HOME=/dev; echo x >~/sda``): in source order or on a later loop pass, it cannot
+    prove where they land. ``cd /tmp`` and ``HOME=/home/u`` keep them out of ``/dev``,
+    ``/proc`` and ``/sys``; where the session's own cwd is, is the live layer's check."""
+    if not any(r.relative for r in layer.redirects):
+        return
+    moves = bool(layer.functions) or any(
+        not a.name
+        or a.name == "CDPATH"
+        or (a.name in _PLACE_NAMES and not _placed(a.value))
+        for a in layer.assignments
+    )
+    for invocation in layer.invocations:
+        head = _head(invocation)
+        if head is None:
+            continue
+        if not head.literal or head.text in ("popd", *_SHELL_RUNNERS, *_CODE_LATER):
+            moves = True
+        elif head.text in _CWD_CHANGERS and not _cd_placed(invocation, head):
+            moves = True
+    if not moves:
+        return
+    why = "target relative to a cwd or ~ the command moves where the gate cannot place it"
+    fixed = {
+        id(r): replace(r, accepted=False, why=why, relative=False)
+        for r in layer.redirects
+        if r.relative
+    }
+    layer.redirects = [fixed.get(id(r), r) for r in layer.redirects]
+    layer.invocations = [
+        replace(i, redirects=tuple(fixed.get(id(r), r) for r in i.redirects))
+        for i in layer.invocations
+    ]
+
+
+def _head(invocation: Invocation) -> Word | None:
+    """The command word, with ``command`` and ``builtin`` in front looked through; None
+    when there is no command word."""
     words = list(invocation.words)
     while words and words[0].literal and words[0].text in _BUILTIN_PREFIXES:
         words.pop(0)
         while words and words[0].literal and words[0].text.startswith("-"):
             words.pop(0)
     if not words or not words[0].source:
+        return None
+    return words[0]
+
+
+_SHELL_RUNNERS = ("eval", "source", ".")
+# Builtins that install code to run later, which the gate does not see (`trap '…' DEBUG`
+# runs before every later command).
+_CODE_LATER = ("trap",)
+_BUILTIN_PREFIXES = ("command", "builtin")
+
+
+def _may_rewire_stdin(invocation: Invocation) -> bool:
+    """Whether ``invocation`` can change the stdin of the shell itself: ``exec`` with
+    any redirect, ``eval`` / ``source`` / ``.`` / ``trap`` (code the gate does not see), or
+    a command word the gate cannot read. ``command`` and ``builtin`` in front are looked
+    through."""
+    head = _head(invocation)
+    if head is None:
         return False  # no command word: a redirect alone applies to nothing
-    head = words[0]
     if not head.literal:
         return True
-    if head.text in _SHELL_RUNNERS:
+    if head.text in _SHELL_RUNNERS or head.text in _CODE_LATER:
         return True
     return head.text == "exec" and bool(invocation.redirects)
