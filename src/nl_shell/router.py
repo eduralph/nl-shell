@@ -4,8 +4,11 @@ M0.7 placeholder. If the first token of the input is not a bash builtin or an
 executable (found on ``$PATH``, or named by a path containing ``/``), the input is
 natural language. If it is, the input is a command, unless it reads like English:
 
-- An unbalanced single quote is English on its own: the line holds an odd number of
-  ``'``, no ``"`` and no ``\\`` ("find what's using port 80", "echo it's fine").
+- An unbalanced single quote is English on its own: the line, without a shell comment
+  (``#`` at the start of a word, outside quotes), holds an odd number of ``'``, no ``"``
+  and no ``\\`` ("find what's using port 80", "echo it's fine").
+- A single-quoted word (a ``'…'`` span that starts and ends at a word boundary, as in
+  ``grep 'hello in world' log``) is shell quoting, so the line is a command.
 - Otherwise the line is English when all of these hold: the first token is not
   ``echo`` or ``printf`` (their operands are free text); the line has at least 4
   words; no word starts with ``-`` and the line holds no shell metacharacter (any of
@@ -29,6 +32,7 @@ from __future__ import annotations
 
 import enum
 import os
+import re
 import shlex
 import shutil
 
@@ -83,6 +87,25 @@ FUNCTION_WORDS = frozenset(
 )
 
 
+# A '…' span that starts and ends at a word boundary: shell quoting, not apostrophes.
+SINGLE_QUOTED_WORD = re.compile(r"(?:^|\s)'[^']*'(?=\s|$)")
+
+
+def _strip_comment(text: str) -> str:
+    """``text`` without its shell comment: from a ``#`` that starts a word, outside
+    quotes, to the end. An unclosed quote runs to the end, so it hides no comment."""
+    quote = ""
+    for i, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (i == 0 or text[i - 1].isspace()):
+            return text[:i]
+    return text
+
+
 def _has_unbalanced_single_quote(text: str) -> bool:
     """An odd number of ``'``, no ``"`` and no ``\\``: an apostrophe, not quoting."""
     return text.count("'") % 2 == 1 and '"' not in text and "\\" not in text
@@ -90,9 +113,11 @@ def _has_unbalanced_single_quote(text: str) -> bool:
 
 def _reads_like_english(token: str, text: str) -> bool:
     """Whether a line whose first token is a command is really an English sentence."""
-    if _has_unbalanced_single_quote(text):
+    if _has_unbalanced_single_quote(_strip_comment(text)):
         return True
     if token in FREE_TEXT_COMMANDS:
+        return False
+    if SINGLE_QUOTED_WORD.search(text):
         return False
     words = text.split()
     if len(words) < 4:

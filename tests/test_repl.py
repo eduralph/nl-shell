@@ -110,6 +110,11 @@ def test_input_is_not_run_yet(fake_path):
         ("sort users.txt", COMMAND),  # only 2 words
         ("echo it's fine", NATURAL_LANGUAGE),  # quote signal beats the echo rule
         ('git commit -m "wip', COMMAND),  # an unclosed " is not the quote signal
+        ("grep 'hello in world' logfile", COMMAND),  # a single-quoted word is quoting
+        ("echo hello # it's a comment", COMMAND),  # an apostrophe in a comment
+        ("git log --oneline # it's long", COMMAND),  # the same, no echo
+        ("grep it's a test file", NATURAL_LANGUAGE),  # an apostrophe inside a word
+        ("find who's in the 'logs' dir", NATURAL_LANGUAGE),  # odd count: apostrophe
         # Each line below reads as English on every count but one, so each pins a
         # single part of the rule.
         ("printf the answer is 42", COMMAND),  # printf's operands are free text
