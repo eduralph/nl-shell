@@ -863,6 +863,46 @@ def test_after_an_exception_mid_command_a_background_job_is_not_stalled(start_se
     assert not session.degraded
 
 
+def test_after_an_exception_mid_command_the_held_control_records_are_bounded(
+        start_session, monkeypatch):
+    # The reader holds control records only up to a limit while it waits for the
+    # interrupted command's E; past it the next run degrades instead of growing.
+    session_mod = _session_module()
+    monkeypatch.setattr(session_mod, "CONTROL_HOLD_LIMIT", 256 * 1024)
+    armed = [False]
+
+    def on_record(line: bytes) -> None:
+        if armed[0] and line.startswith(b"S "):
+            raise _Boom("raised while the command runs")
+
+    session = start_session(on_record=on_record)
+    armed[0] = True
+    with pytest.raises(_Boom):
+        session.run("sleep 0.2; head -c 4194304 /dev/zero >&3", timeout=RUN_TIMEOUT)
+    armed[0] = False
+    background = session._background
+    _wait_for(lambda: background._control_overflow, 10.0, "the held records never overflowed")
+    assert background._control_size == 0 and background._control == []
+    with pytest.raises(session_mod.SessionDegraded, match="control channel sent over"):
+        session.run("echo after", timeout=RUN_TIMEOUT)
+    assert session.degraded
+
+
+def test_held_control_records_find_e_across_reads():
+    # E is found whether it starts the held bytes or is split across two reads.
+    background = _session_module()._Background(64)
+    assert background.hold_control(b"E\n")
+    background.take_control()
+    assert not background.hold_control(b"D 1 0 0\n")
+    assert not background.hold_control(b"P x\n")
+    assert background.hold_control(b"E\n")
+    background.take_control()
+    assert not background.hold_control(b"P x\nE")
+    assert background.hold_control(b"\n")
+    control, overflow = background.take_control()
+    assert control == [b"P x\nE", b"\n"] and not overflow
+
+
 def test_a_session_dropped_without_close_is_collected_and_bash_ends(tmp_path, monkeypatch):
     # The reader thread must not keep the session alive: dropped without close() (say an
     # exception skipped it), the session is collected, its PtyProcess ends bash, and the

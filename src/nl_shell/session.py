@@ -39,6 +39,7 @@ from typing import Callable
 import ptyprocess
 
 from nl_shell.pty_protocol import (
+    MAX_RECORD,
     PASTE_END,
     PASTE_START,
     CommandRefused,
@@ -314,6 +315,11 @@ MAX_OUTPUT = 1 << 20
 # bytes are kept and the older ones are counted as dropped.
 BACKGROUND_LIMIT = 64 * 1024
 
+# Control records the background reader holds for the next run after an exception
+# mid-command (§6.6): a whole snapshot fits many times over. Past this the reader stops
+# reading the channel and the next run degrades the session.
+CONTROL_HOLD_LIMIT = 8 * MAX_RECORD
+
 # The line a block of background output starts with (§6.6).
 BACKGROUND_HEADER = b"[background output]\r\n"
 
@@ -543,23 +549,37 @@ class _Background:
         # Control records the reader read up to the command's E (_background_loop), for
         # the next run to feed to the tracker; None in place of bytes marks EOF.
         self._control: list[bytes | None] = []
+        self._control_size = 0
+        self._control_tail = b"\n"  # the last two bytes held (a record ends in "\n")
+        self._control_overflow = False
 
     def hold_control(self, data: bytes) -> bool:
         """Keep ``data`` read from the control channel (``b""`` is EOF). True once the
-        ``E`` record is among the bytes held, or the channel closed."""
+        ``E`` record is among the bytes held, the channel closed, or more than
+        ``CONTROL_HOLD_LIMIT`` bytes came without an ``E``: then nothing is kept and the
+        next ``take_control`` reports the overflow."""
         with self._lock:
             if not data:
                 self._control.append(None)
                 return True
+            if self._control_size + len(data) > CONTROL_HOLD_LIMIT:
+                self._control, self._control_size = [], 0
+                self._control_overflow = True
+                return True
             self._control.append(data)
-            held = b"".join(c for c in self._control if c is not None)
-        return held.startswith(b"E\n") or b"\nE\n" in held
+            self._control_size += len(data)
+            window = self._control_tail + data
+            self._control_tail = window[-2:]
+        return b"\nE\n" in window
 
-    def take_control(self) -> list[bytes | None]:
-        """The control reads held since the last call, in order (``None`` is EOF)."""
+    def take_control(self) -> tuple[list[bytes | None], bool]:
+        """The control reads held since the last call, in order (``None`` is EOF), and
+        whether the reader gave up on an overflow."""
         with self._lock:
             control, self._control = self._control, []
-        return control
+            overflow, self._control_overflow = self._control_overflow, False
+            self._control_size, self._control_tail = 0, b"\n"
+        return control, overflow
 
     def add(self, chunk: bytes) -> None:
         with self._lock:
@@ -1413,7 +1433,15 @@ class Session:
 
     def _feed_held_control(self) -> None:
         """Feed the tracker the control records the reader thread held (§6.6)."""
-        for data in self._background.take_control():
+        control, overflow = self._background.take_control()
+        if overflow:
+            # Records were dropped, so the protocol state cannot be followed (§4.2).
+            self._tracker.degrade(
+                f"the control channel sent over {CONTROL_HOLD_LIMIT} bytes after an"
+                " interrupted command without its end record"
+            )
+            return
+        for data in control:
             if data is None:
                 self._ctl_open = False
                 self._tracker.eof()
