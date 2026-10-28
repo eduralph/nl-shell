@@ -48,4 +48,4 @@ This appends a `Signed-off-by: Your Name <you@example.com>` trailer (using your
   GPU or teacher.
 
 The cycle that drives changes here is run from the companion PDCA instance repo,
-[nl-shell-pdca](https://github.com/eduralph/nl-shell-pdca).
+[nl-shell-pdca](https://github.com/getwyrd/nl-shell-pdca).

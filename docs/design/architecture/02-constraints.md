@@ -26,7 +26,7 @@ tags:
 
 - One developer, open source, Apache-2.0 with DCO (ADR-0012).
 - Changes go through issues, milestones and PRs driven by the PDCA quality cycle in
-  [nl-shell-pdca](https://github.com/eduralph/nl-shell-pdca).
+  [nl-shell-pdca](https://github.com/getwyrd/nl-shell-pdca).
 - Licenses of the teacher model, the student base model and the training data must allow
   distributing the result. **[OPEN]** — issues in M2 and M3.
 
