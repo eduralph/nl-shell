@@ -18,7 +18,9 @@ ADRs 0002–0012 record the decisions `docs/plan.md` already makes. ADRs 0013–
 the 2026-10-14 design review (#63) and supersede 0005–0007, 0011 and part of 0008, which were still Proposed. All
 start as Proposed and are ratified in the Foundations milestone (#6). ADR-0024 comes from the
 2026-10-15 review of the interaction shape, and ADR-0025 from the hardening review of the
-same day.
+same day. ADR-0027 comes from the 2026-10-28 review of the shell layer merged in #203 and
+supersedes 0013, keeping its allowlist and live-session check but bounding what the gate
+parses.
 
 **Building against Proposed ADRs:** code may implement an ADR while it is still Proposed;
 it does not wait for ratification. The ADR stays the reference: if ratification changes or
@@ -41,7 +43,7 @@ Proposed ADR names it, so that change can be found.
 | [0010](0010-generic-training-data-local-personalization.md) | Ship a model trained on generic data only; personalize locally | Proposed |
 | [0011](0011-python-and-prompt-toolkit.md) | Python and prompt_toolkit for the REPL | Superseded by 0021 |
 | [0012](0012-apache-2-and-dco.md) | Apache-2.0 license and DCO sign-off | Proposed |
-| [0013](0013-policy-gate-v2.md) | Policy gate v2: a read-only allowlist checked against the live session | Proposed |
+| [0013](0013-policy-gate-v2.md) | Policy gate v2: a read-only allowlist checked against the live session | Superseded by 0027 |
 | [0014](0014-pty-session-protocol.md) | PTY session protocol and terminal ownership | Proposed |
 | [0015](0015-sudo-handling-v2.md) | sudo handling v2: passthrough only for privileged commands, behind a session-chosen prompt | Proposed |
 | [0016](0016-taint-model-v2.md) | Taint model v2: provenance labels, per-class effects, clean-room re-derivation for sudo | Proposed |
@@ -55,3 +57,4 @@ Proposed ADR names it, so that change can be found.
 | [0024](0024-pty-front-end-not-readline-or-fork.md) | nl-shell owns the session: a PTY front end, not a readline integration or a bash fork | Proposed |
 | [0025](0025-sensitive-paths.md) | Sensitive paths: reading credentials needs a confirm, and the output stays on screen | Proposed |
 | [0026](0026-issue-priority-scheme.md) | Issue priority: severity and reach set P0–P3, with safety overrides | Proposed |
+| [0027](0027-read-only-grammar.md) | Read-only is granted only inside a closed grammar; everything else is confirmed unparsed | Proposed |
