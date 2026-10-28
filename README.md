@@ -21,14 +21,14 @@ The full design, phases and open questions are in [docs/plan.md](docs/plan.md).
 
 ## Status
 
-Pre-code. See the [milestones](https://github.com/eduralph/nl-shell/milestones) for the plan
+Pre-code. See the [milestones](https://github.com/getwyrd/nl-shell/milestones) for the plan
 and what is in work.
 
 ## Development process
 
 Changes to this repo are driven by a PDCA quality cycle (Plan → Do → Check → Act) run from
 the companion instance repo
-[nl-shell-pdca](https://github.com/eduralph/nl-shell-pdca), rendered from
+[nl-shell-pdca](https://github.com/getwyrd/nl-shell-pdca), rendered from
 [pdca-harness](https://github.com/eduralph/pdca-harness). The instance keeps the per-issue
 result bundles and the process log; this repo keeps only the product.
 

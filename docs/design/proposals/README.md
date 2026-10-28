@@ -16,4 +16,4 @@ or `withdrawn`.
 
 | # | Title | Status |
 |---|-------|--------|
-| [0001](draft/0001-implementation-arc.md) | The implementation arc — the order nl-shell is built in | draft (acceptance: [#6](https://github.com/eduralph/nl-shell/issues/6)) |
+| [0001](draft/0001-implementation-arc.md) | The implementation arc — the order nl-shell is built in | draft (acceptance: [#6](https://github.com/getwyrd/nl-shell/issues/6)) |
