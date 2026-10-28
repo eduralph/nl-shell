@@ -1,7 +1,7 @@
 ---
 created: 14.10.2026 20:48
 type: adr
-status: Proposed
+status: Superseded by ADR-0027
 supersedes: ADR-0005
 tags:
   - adr
