@@ -25,6 +25,37 @@ it does not wait for ratification. The ADR stays the reference: if ratification 
 supersedes it, the code is changed to match, not the other way round. A PR that implements a
 Proposed ADR names it, so that change can be found.
 
+## How an ADR is made
+
+The rules are in ADR-0001 (lifecycle), ADR-0028 (supersession) and
+[GOVERNANCE.md](../../governance/GOVERNANCE.md) (who accepts). In order:
+
+1. **Open an issue** that states the question. Every pull request needs one, and the
+   discussion before there is a draft belongs there.
+2. **Take the next number.** One more than the highest number in the index and in any open
+   pull request that adds an ADR. Numbers are never reused, not even for an ADR that was
+   dropped.
+3. **Write it from the template.** Copy [`../templates/adr.md`](../templates/adr.md) to
+   `NNNN-short-title.md`, keep `status: Proposed` with nothing after it on that line, and
+   write Context, Decision and Consequences. Mark anything still undecided **[OPEN]**.
+4. **Add it to the index** below, with status `Proposed`, in the same pull request.
+5. **Open the pull request** with `Refs #N` for the issue. Discussion happens there; a
+   Proposed ADR may be edited freely, before and after it merges.
+6. **Accept it.** When the architecture board (GOVERNANCE.md) agrees and no **[OPEN]**
+   items are left, change `status:` to `Accepted` and the index row to match, then merge.
+   This edit is the act of acceptance; only a maintainer makes it, never an agent. From
+   here the file is frozen (the `docs` check, `scripts/docs_checks.py`).
+7. **Change it later only by superseding it** (ADR-0028): a new ADR with
+   `supersedes: NNNN`, the old file's `status:` line changed to `Superseded by ADR-NNNN`
+   and nothing else, and the old index row changed to match, all in one pull request.
+
+ADR-0001 has no Rejected status: if the board does not agree, close the pull request
+without merging it.
+
+`docs-check` keeps this index honest: every ADR is listed once, its status here matches its
+frontmatter, and both sides of every supersession agree. Run
+`python3 -I .github/docs-check/adr_index.py` before pushing.
+
 ## Index
 
 | # | Title | Status |
@@ -55,3 +86,5 @@ Proposed ADR names it, so that change can be found.
 | [0024](0024-pty-front-end-not-readline-or-fork.md) | nl-shell owns the session: a PTY front end, not a readline integration or a bash fork | Proposed |
 | [0025](0025-sensitive-paths.md) | Sensitive paths: reading credentials needs a confirm, and the output stays on screen | Proposed |
 | [0026](0026-issue-priority-scheme.md) | Issue priority: severity and reach set P0–P3, with safety overrides | Proposed |
+| [0027](0027-proposal-and-spec-process.md) | Proposal and specification process, lifecycle, and immutability | Proposed |
+| [0028](0028-supersession.md) | How a frozen document is superseded | Proposed |
