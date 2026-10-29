@@ -5,3 +5,4 @@ require-linked-issue
 pytest (bash 5.1)
 pytest (bash 5.2)
 pytest (bash 5.3)
+docs
