@@ -17,8 +17,8 @@ agent-specific discipline.
 ## Change discipline
 
 - Every change starts from an issue on the open milestone, and the PR body
-  carries a closing reference (`Closes #NNN`) — the `require-linked-issue` check
-  enforces it.
+  links it: `Closes #NNN`, or `Refs #NNN` for partial work — the
+  `require-linked-issue` check enforces it.
 - One logical change per issue / branch / PR; split unrelated changes.
 - Commits are signed off (`git commit -s`, [DCO](DCO)) with a
   conventional-prefix subject (`fix:`, `feat:`, `docs:`, `ci:`, `chore:`) and a
