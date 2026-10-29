@@ -43,7 +43,36 @@ jobs:
             echo "scripts/docs_checks.py is not on the base; running the PR's copy"
             python -I scripts/docs_checks.py immutability "$BASE" "$HEAD"
           fi
-      # Every relative link in a tracked .md file must point at a tracked file or
-      # directory. tests/test_docs_links.py runs the same check in tests.yml.
+      # The checkers' own tests, so a change to one is tested before it gates anything.
+      - name: Test the checkers
+        run: python3 -I -m unittest discover -s .github/docs-check -v
+      # Each step runs the BASE commit's copy of its checker, so a PR cannot switch off
+      # its own check by editing it. Only the PR that first adds a checker runs its own
+      # copy. `-I` (isolated mode) keeps the checkout off sys.path, so a PR cannot plant
+      # a module such as `re.py` that the checker would import instead of the stdlib.
       - name: Relative links resolve
-        run: python -I scripts/docs_links.py
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          CHECKER: .github/docs-check/docs_links.py
+        run: |
+          set -euo pipefail
+          if git cat-file -e "$BASE:$CHECKER" 2>/dev/null; then
+            echo "Running $CHECKER from the base commit $BASE"
+            git show "$BASE:$CHECKER" | python3 -I -
+          else
+            echo "$CHECKER is not on the base; running the PR's copy"
+            python3 -I "$CHECKER"
+          fi
+      - name: ADR index matches the ADRs
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          CHECKER: .github/docs-check/adr_index.py
+        run: |
+          set -euo pipefail
+          if git cat-file -e "$BASE:$CHECKER" 2>/dev/null; then
+            echo "Running $CHECKER from the base commit $BASE"
+            git show "$BASE:$CHECKER" | python3 -I -
+          else
+            echo "$CHECKER is not on the base; running the PR's copy"
+            python3 -I "$CHECKER"
+          fi

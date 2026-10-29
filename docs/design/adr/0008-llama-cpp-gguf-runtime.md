@@ -1,11 +1,14 @@
 ---
 created: 14.10.2026 19:22
 type: adr
-status: Proposed (backend order and VRAM budget superseded by ADR-0019)
+status: Proposed
 tags:
   - adr
 ---
 # 0008. llama.cpp with GGUF models as the one runtime across GPU vendors
+
+> The backend order and the VRAM budget are superseded by [ADR-0019](0019-gpu-backend-order.md);
+> the rest of this ADR stands.
 
 ## Context
 
