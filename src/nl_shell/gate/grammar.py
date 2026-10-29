@@ -45,7 +45,12 @@ RESERVED_WORDS = frozenset(
 
 _SQ = re.compile(r"'[^'\n]*'")
 _DQ = re.compile(r'"[^"$`\\!\n]*"')
-_DEV_NULL = re.compile(r"(2>|&>|>)[ \t]*/dev/null")
+# A redirect spelling ends where a token ends: at the end, a separator or an operator.
+# Without the boundary `>/dev/null.bak` would read as `>/dev/null` plus a word `.bak`,
+# while bash writes to a real file.
+_TOKEN_END = r"(?=$|[ \t|;&<>])"
+_DEV_NULL = re.compile(r"(2>|&>|>)[ \t]*/dev/null" + _TOKEN_END)
+_STDERR_DUP = re.compile(r"2>&1" + _TOKEN_END)
 _SOCKETS = ("/dev/tcp/", "/dev/udp/")
 
 
@@ -171,7 +176,7 @@ def _redirect(source: str, i: int) -> tuple[Redirect | None, int] | None:
     operator is there but not in an accepted form, or ``None`` when no redirect starts
     here. Only tried at the start of a word."""
     c = source[i]
-    if source.startswith("2>&1", i):
+    if _STDERR_DUP.match(source, i):
         return _record("2", ">&", "1", source[i : i + 4], output=True, exempt=True), i + 4
     match = _DEV_NULL.match(source, i)
     if match is not None:

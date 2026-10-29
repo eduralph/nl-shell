@@ -39,6 +39,15 @@ REJECTED = [
     ("echo x >fd/3", "descriptor 3"),
     ("echo x > self/fd/3", "descriptor 3"),
     ("echo x >\"3\"", "descriptor 3"),
+    # the target goes through quote removal (review finding)
+    ("cat f >&'3'", "descriptor 3"),
+    ("cat <&'3'", "descriptor 3"),
+    ("echo x >&'9'", "descriptor 9"),
+    ("cat f >&\\3", "descriptor 3"),
+    ("echo x >'/dev/fd/3'", "descriptor 3"),
+    ("echo x > '3'", "descriptor 3"),
+    ("echo pw | 'sudo' -S x", "sudo -S"),
+    ("echo 'sudo -S' x", "sudo -S"),  # an accepted false positive
     ("echo $((3>2))", "descriptor 3"),  # an accepted false positive
     # sudo
     ("sudo -S true", "sudo -S"),
@@ -79,9 +88,7 @@ NOT_REJECTED = [
     "cat a3>f",
     "ls -1>x",
     "echo file.3>x",
-    "grep '3>' f",
-    "grep '>&3' f",
-    "echo '>/dev/fd/3'",
+    "grep '3>' f",  # a quoted number before `>` is a word, not a descriptor
     "sudo apt update",
     "sudo cp -p a b",
     "sudo -u postgres psql",
@@ -116,6 +123,9 @@ def test_export_split_name_is_over_approximated():
 
 PRIVILEGED = [
     "sudo apt update",
+    "'sudo' id",
+    "s\"u\"do id",
+    "echo 'sudo'",  # an accepted false positive
     "/usr/bin/sudo id",
     "\\sudo id",
     "x && sudo id",
@@ -135,8 +145,6 @@ NOT_PRIVILEGED = [
     "echo pseudo",
     "ls sudo/",
     "ls ./sudo-rs",
-    "echo 'sudo id'",
-    "grep sudo file",  # `sudo` as an operand: a false positive the spec accepts
 ]
 
 
@@ -147,7 +155,7 @@ def test_privileged(text):
     assert any("privileged" in r for r in result.reasons)
 
 
-@pytest.mark.parametrize("text", NOT_PRIVILEGED[:5], ids=lambda x: repr(x)[:40])
+@pytest.mark.parametrize("text", NOT_PRIVILEGED, ids=lambda x: repr(x)[:40])
 def test_not_privileged(text):
     assert not scan(text).privileged, text
 

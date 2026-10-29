@@ -94,6 +94,19 @@ OUTSIDE = [
     "ls 1>&2",
     "ls >&2",
     "ls 2> /dev/nul",
+    # a redirect spelling is a whole token (review finding: these wrote real files or
+    # dup'd other descriptors while the recogniser saw an exempt redirect)
+    "cat /etc/passwd >/dev/null.bak",
+    "ls >/dev/nullx",
+    "ls 2>/dev/nullX",
+    "ls &>/dev/nullx",
+    "ls >/dev/null/x",
+    "ls >/dev/null'x'",
+    "ls 2>&11",
+    "ls 2>&10",
+    "ls 2>&1q",
+    "ls 2>&1'q'",
+    "ls 2>&1-",
     "cat << E",
     "cat <<< x",
     "diff <(ls) <(ls)",
@@ -179,6 +192,9 @@ OPERANDS = [
     "a'b'c", "--x='y z'", '"a"b', "'a'\"b\"", "a\"\"b", "x''y",
 ]  # fmt: skip
 REDIRECTS = ["2>&1", ">/dev/null", "> /dev/null", "2>/dev/null", "&>/dev/null", "<a", "< a", "<'x y'"]
+# Glued to a redirect in the generator; every one of these is outside the grammar, which
+# the oracle confirms by never being asked about them (and the OUTSIDE table pins them).
+GLUE = ["", "", "", "", "q", "'q'", "1", ".bak", "x", "-"]
 # `||` is left out: its right-hand side does not run when the left succeeds.
 OPERATORS = [" | ", "|", " ; ", ";", " && ", "&&", "\t|\t"]
 
@@ -214,7 +230,12 @@ def generate(rng: random.Random) -> str:
             parts.append(rng.choice(OPERATORS))
         words = [rng.choice(COMMAND_WORDS)]
         words += [rng.choice(OPERANDS) for _ in range(rng.randint(0, 4))]
-        redirects = [rng.choice(REDIRECTS) for _ in range(rng.randint(0, 2))]
+        redirects = []
+        for _ in range(rng.randint(0, 2)):
+            redirect = rng.choice(REDIRECTS)
+            if not redirect.startswith("<"):  # glue on `<x y'1` names a file that is absent
+                redirect += rng.choice(GLUE)
+            redirects.append(redirect)
         for r in redirects:
             words.insert(rng.randint(1, len(words)), r)
         parts.append(rng.choice([" ", "  ", "\t"]).join(words))
@@ -240,7 +261,7 @@ def test_bash_oracle(tmp_path):
         assert status == 0, (text, status)
         assert sorted(theirs) == sorted(ours), text
         checked += 1
-    assert checked > 150, checked
+    assert checked > 100, checked
 
 
 @pytest.mark.parametrize(

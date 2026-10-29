@@ -92,37 +92,44 @@ def _scan(source: str, proposal: bool) -> Scan:
         if reason not in rejections:
             rejections.append(reason)
 
-    # §5: descriptors 3 and above, in any spelling the gate can't rule out.
+    # §5: descriptors 3 and above, in any spelling the gate can't rule out. A descriptor
+    # in front of an operator is only one when written as bare digits (`'3'>x` is a word),
+    # so it is looked for in the blanked text; a *target* goes through quote removal
+    # (`>&'3'`, `>&\3`, `>'/dev/fd/3'` all name fd 3), so targets are also looked for in
+    # the text with its quotes and backslashes removed.
+    dequoted = dequote(raw)
     for match in _FD_BEFORE.finditer(text):
         if int(match.group(1)) >= 3:
             reject(f"redirection involving descriptor {match.group(1)}")
     if _VAR_FD_BEFORE.search(text):
         reject("redirection with a {varname} descriptor")
     for pattern in (_FD_AFTER, _FD_PATH, _NUMBER_TARGET, _FD_DIR_TARGET):
-        for match in pattern.finditer(text):
-            if int(match.group(1)) >= 3:
-                reject(f"redirection involving descriptor {match.group(1)}")
-    if _SUDO_ENV.search(dequote(raw)):
+        for haystack in (text, dequoted):
+            for match in pattern.finditer(haystack):
+                if int(match.group(1)) >= 3:
+                    reject(f"redirection involving descriptor {match.group(1)}")
+    if _SUDO_ENV.search(dequoted):
         reject("names SUDO_PROMPT or SUDO_ASKPASS")
     if _DECLARED_UNREAD.search(text):
         reject("declaration with an operand the gate cannot name")
 
+    # §4: a privileged word is looked for after quote removal, since `'sudo' id` and
+    # `s"u"do id` run sudo; so `echo 'sudo'` is privileged too (an accepted false
+    # positive), and the options after it are read the same way (`sudo '-S'`).
     privileged = False
-    heredoc = _HEREDOC.search(text) is not None
-    for match in _PRIVILEGED.finditer(text):
+    heredoc = _HEREDOC.search(dequoted) is not None
+    for match in _PRIVILEGED.finditer(dequoted):
         privileged = True
         word = match.group(1)
         reason = f"{word} is privileged"
         if reason not in reasons:
             reasons.append(reason)
-        before = text[: match.start(1)].rstrip()
+        before = dequoted[: match.start(1)].rstrip()
         if before.endswith("|") and not before.endswith("||"):
             reject(f"a pipe into {word}")
         if heredoc:
             reject(f"a here-document or here-string with {word}")
-        # The options are read from the source with its quotes removed, as bash reads
-        # them: `sudo '-S'` is `sudo -S`. Blanking is the same length as the source.
-        rest = dequote(raw[match.end(1) :])
+        rest = dequoted[match.end(1) :]
         if word in ("sudo", "doas"):
             _sudo_options(word, rest, reject, proposal, heredoc or "|" in text)
         elif proposal and word == "su" and not re.search(r"(?:^|\s)-c(?:\s|$)", rest):
