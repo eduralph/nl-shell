@@ -1,0 +1,7 @@
+# The status checks main requires, one per line. Each is a job name in
+# .github/workflows/. scripts/repo-settings.py (eduralph/project-template) reads this file
+# from main to check and apply the branch protection.
+require-linked-issue
+pytest (bash 5.1)
+pytest (bash 5.2)
+pytest (bash 5.3)
