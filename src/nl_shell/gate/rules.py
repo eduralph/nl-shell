@@ -1,10 +1,10 @@
 """The policy gate's command layer: a stub (issue #196).
 
-Spec ``policy-gate/v1`` §1 step 4: the static, session-altering, destructive and
-privileged rules and the allowlist, per simple command. #197 (wrappers, sudo, destructive
-commands, builtins, decisions A and B) and #198 (the allowlist, the terminal-read rule,
-the here-doc exemption) replace this stub. Until then every simple command is
-``mutating``, "not allowlisted": decision A's floor, so nothing is ``read-only``.
+Spec ``policy-gate/v2`` §3: the allowlist and the per-command rules, for each simple
+command the read-only grammar produced (ADR-0027). #198 (the allowlist, the file-operand
+and terminal-read rules) replaces this stub; the destructive and wrapper rules that #197
+planned live in ``nl_shell.gate.advice`` now, as advice. Until then every simple command
+is ``mutating``, "not allowlisted", so nothing is ``read-only``.
 """
 
 from __future__ import annotations

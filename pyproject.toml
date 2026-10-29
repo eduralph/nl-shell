@@ -14,8 +14,9 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "ptyprocess>=0.7",
     "PyYAML>=6",
-    # The policy gate's parser (spec policy-gate/v1 §1.2): pinned exactly, because the
-    # gate's rules depend on how this grammar reads bash.
+    # The policy gate's advisory walk (spec policy-gate/v2 §6): pinned so the confirm
+    # wording is reproducible. Nothing safety-relevant depends on this grammar
+    # (ADR-0027); read-only comes from the gate's own recogniser.
     "tree-sitter==0.26.0",
     "tree-sitter-bash==0.25.1",
 ]

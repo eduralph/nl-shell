@@ -1,6 +1,6 @@
 """Loading a target's gate conformance vectors, ``targets/<id>/gate-vectors.toml``.
 
-Spec ``policy-gate/v1`` Conformance: each target has its own vectors. The file is a list
+Spec ``policy-gate/v2`` Conformance: each target has its own vectors. The file is a list
 of ``[[vector]]`` tables with these keys, and only these:
 
 - ``command`` (string, required);
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from nl_shell import targets
-from nl_shell.gate.parse import CLASSES
+from nl_shell.gate.types import CLASSES
 
 VECTORS_FILE = "gate-vectors.toml"
 ORIGINS = ("proposal", "typed")

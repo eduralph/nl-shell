@@ -1,27 +1,19 @@
-"""The policy gate's shell layer (spec ``policy-gate/v1`` §1 steps 2-4, issue #196).
+"""The advisory walk (ADR-0027 point 5, spec ``policy-gate/v2`` §6).
 
 It parses a command with the pinned tree-sitter-bash and walks the tree with one handler
-per named node kind of the pinned grammar (``HANDLERS``). Each simple command becomes an
-``Invocation`` for the command layer (``nl_shell.gate.rules``).
+per node kind (``HANDLERS``). Each simple command becomes an ``Invocation``; assignments,
+function definitions, redirections and process substitutions are collected on the
+``ShellLayer``.
 
-One principle runs through this module: **nothing is safe until it is proven**. Every fact
-it records (the tree is right, a node was walked, a word is literal, stdin comes from X, a
-redirect is safe) starts as not proven, and becomes proven only through the short lists
-of forms below. Anything else is handled as the worst case.
-
-- Rule 1 (``untrusted_features``): the tree is trusted only with no ``ERROR`` or
-  ``MISSING`` node and none of the features tree-sitter-bash reads differently from bash.
-- Rule 2 (``walk``): every named node is visited exactly once, and every ``command``,
-  ``declaration_command`` and ``unset_command`` gives exactly one invocation. Both are
-  checked against the tree on every walk; a miss is a ``GateFailure`` (decision C).
-- Rule 3 (``Stdin``, ``lex_word``): stdin sources and the literal flag are proven only
-  through the forms listed there; anything else is ``unknown`` / not literal.
-- Rule 4 (``judge_redirect``): a redirect is accepted only in the listed safe forms. A
-  target that is relative to the cwd or to ``~`` is accepted only when it cannot name a
-  descriptor of 3 or more and nothing in the input can change the cwd or ``HOME``
-  (``_unplaced_targets``); the session's own cwd is the live layer's to check (§8.1).
-- Rule 5: input over ``MAX_INPUT_BYTES`` is refused before it is parsed, and the walk has a
-  total-work budget (``MAX_WORK`` nodes, ``MAX_DEPTH`` levels).
+What this layer is for, and what it is not: its findings may **raise** a command's class
+and word the confirm (a destructive command, a session-altering builtin, an output
+redirection, the inner command of a wrapper). They can never grant ``read-only`` — only
+the grammar (``nl_shell.gate.grammar``) can — and they never decide a rejection, which is
+the text scan's job (``nl_shell.gate.scan``). So the tree does not have to be proven
+faithful to bash: a parse error, a construct the walk does not handle, a budget overrun
+or any internal error simply yields a layer with ``analysed = False`` and nothing in it,
+and the command is confirmed as ``mutating`` with no further detail. ``shell_layer``
+never raises.
 """
 
 from __future__ import annotations
@@ -33,23 +25,44 @@ from dataclasses import dataclass, field, replace
 import tree_sitter
 import tree_sitter_bash
 
-# Rule 5. Proposals are capped at 2000 characters (proposal.py), so these bounds bind only
-# typed input. tree-sitter-bash's parse time grows with the square of the input, which is
-# why the size cap is checked before parsing.
+from nl_shell.gate.types import (
+    CLASSES,
+    PIPE,
+    RANK,
+    TERMINAL,
+    UNKNOWN,
+    Assignment,
+    Invocation,
+    Redirect,
+    Stdin,
+    Word,
+)
+
+__all__ = [
+    "CLASSES",
+    "RANK",
+    "Assignment",
+    "Invocation",
+    "Redirect",
+    "ShellLayer",
+    "Stdin",
+    "Word",
+    "has_device_socket",
+    "lex_word",
+    "make_word",
+    "parse_source",
+    "shell_layer",
+]
+
+# Proposals are capped at 2000 characters (proposal.py), so these bounds bind only typed
+# input. tree-sitter-bash's parse time grows with the square of the input, which is why
+# the size cap is checked before parsing. Exceeding a bound ends the analysis, nothing
+# more.
 MAX_INPUT_BYTES = 8 * 1024
 MAX_WORK = 4096
 MAX_DEPTH = 100
 
 LANGUAGE = tree_sitter.Language(tree_sitter_bash.language())
-
-CLASSES = ("read-only", "mutating", "session-altering", "destructive", "privileged")
-RANK = {
-    "read-only": 0,
-    "mutating": 1,
-    "session-altering": 1,
-    "destructive": 2,
-    "privileged": 3,
-}
 
 ERROR_KIND = "ERROR"
 SIMPLE_KINDS = ("command", "declaration_command", "unset_command")
@@ -59,19 +72,15 @@ REDIRECT_OPERATORS = frozenset(
     (">", ">>", ">|", "&>", "&>>", "<>", ">&", "<&", ">&-", "<&-", "<", "<<", "<<-", "<<<")
 )
 _OUTPUT_FILE_OPERATORS = (">", ">>", ">|", "&>", "&>>")
-_CLOSE_OPERATORS = (">&-", "<&-")
 _INPUT_OPERATORS = ("<", "<&", "<&-")  # default descriptor 0
-_DEV_NAMES = ("/dev/null", "/dev/stdin", "/dev/stdout", "/dev/stderr")
 _DEV_SOCKETS = ("/dev/tcp/", "/dev/udp/")
-_SYSTEM_TREES = ("/dev", "/proc", "/sys")
 _PLAIN_DELIMITER = re.compile(r"[A-Za-z0-9_]+")
 _QUOTED_DELIMITER = re.compile(r"'[^']*'|\"[^\"\\$`]*\"")
 _LOW_FD = ("0", "1", "2")
 
 
-class GateFailure(Exception):
-    """The shell layer could not class the command (decision C). The message is fixed
-    text: it never quotes the input."""
+class _Stop(Exception):
+    """The walk hit a bound or a construct it does not handle; the layer stays empty."""
 
 
 def named_kinds() -> tuple[str, ...]:
@@ -90,99 +99,12 @@ def parse_source(source: bytes) -> tree_sitter.Tree:
     return tree_sitter.Parser(LANGUAGE).parse(source)
 
 
-# --- facts ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Stdin:
-    """Where a simple command's standard input comes from (Rule 3).
-
-    ``kind`` is one of:
-
-    - ``terminal``: a command outside any function body and outside ``>(…)``, with no
-      redirect touching fd 0, first in its pipeline or standing alone;
-    - ``pipe``: a later stage of a pipeline, or the command inside ``>(…)``;
-    - ``file``: ``<`` (or ``0<``) from a literal path; ``value`` is the path;
-    - ``literal``: a here-string whose word is literal, or a here-doc whose delimiter is
-      quoted (or unquoted with no ``$``, `` ` `` or ``\\`` in its body); ``value`` is the
-      text;
-    - ``unknown``: everything else (function bodies, ``0>&N``, ``0>&-``, a stdin
-      redirect the gate cannot place, any command in untrusted text).
-
-    Consumers MUST treat ``unknown`` as the worst case for each rule: as a pipe for the
-    sudo-pipe rule and decision B, and as the terminal for the terminal-read rule.
-    """
-
-    kind: str
-    value: str | None = None
-
-
-TERMINAL = Stdin("terminal")
-PIPE = Stdin("pipe")
-UNKNOWN = Stdin("unknown")
-
-
-@dataclass(frozen=True)
-class Word:
-    """One shell word: ``text`` after quote removal, ``literal`` when bash would expand
-    nothing in it (Rule 3), ``source`` as written."""
-
-    text: str
-    literal: bool
-    source: str
-
-
-@dataclass(frozen=True)
-class Assignment:
-    """One ``variable_assignment`` node. ``role`` is ``prefix`` (``VAR=x cmd``),
-    ``declaration`` (inside ``export``/``declare``/…) or ``standalone``."""
-
-    name: str
-    value: Word | None
-    role: str
-
-
-@dataclass(frozen=True)
-class Redirect:
-    """One redirect node, judged by Rule 4."""
-
-    kind: str  # file_redirect | heredoc_redirect | herestring_redirect | loose
-    descriptor: str | None
-    operator: str
-    target: Word | None
-    accepted: bool
-    why: str  # why it was rejected ("" when accepted)
-    output: bool  # gives the §2 "output redirection" reason
-    exempt: bool  # one of the §2 exempt forms
-    device_socket: bool  # /dev/tcp or /dev/udp
-    feed: Stdin | None  # the stdin a here-doc/here-string gives
-    display: str  # operator and target as written (to be escaped before display)
-    heredoc_operator: bool  # its operator bytes are an unquoted `<<` in the text
-    start: int
-    relative: bool = False  # an accepted file target placed by the cwd or by `~`
-
-
-@dataclass(frozen=True)
-class Invocation:
-    """One simple command handed to the command layer."""
-
-    kind: str  # command | declaration | unset
-    words: tuple[Word, ...]
-    assignments: tuple[Assignment, ...]
-    redirects: tuple[Redirect, ...]
-    stdin: Stdin
-    in_function: bool
-
-    @property
-    def command_word(self) -> Word | None:
-        return self.words[0] if self.words else None
-
-
 @dataclass
 class ShellLayer:
-    """Everything the walk proved about one command."""
+    """What the walk found in one command. ``analysed`` is False when the walk did not
+    finish; everything is then empty."""
 
-    untrusted: tuple[str, ...]
+    analysed: bool = True
     invocations: list[Invocation] = field(default_factory=list)
     assignments: list[Assignment] = field(default_factory=list)
     functions: list[str] = field(default_factory=list)
@@ -191,15 +113,14 @@ class ShellLayer:
     words: list[Word] = field(default_factory=list)
 
 
-# --- Rule 3: the literal flag --------------------------------------------------------
+# --- the literal flag ----------------------------------------------------------------
 
 
 def lex_word(source: str) -> tuple[str, frozenset[str]]:
     """Quote-remove ``source`` as bash would and say what bash would expand in it.
 
     Returns the text and the set of causes that make it non-literal (empty means
-    literal). ``tilde`` alone, at the very start and followed by ``/`` or nothing, is
-    reported as ``leading-tilde`` so a redirect target may allow it (Rule 4).
+    literal).
     """
     out: list[str] = []
     causes: set[str] = set()
@@ -260,10 +181,7 @@ def lex_word(source: str) -> tuple[str, frozenset[str]]:
         elif c in " \t\n;&|<>":
             causes.add("metacharacter")
         elif c == "~":
-            if i == 0:
-                follows = source[1:2]
-                causes.add("leading-tilde" if follows in ("", "/") else "tilde")
-            elif source[i - 1] in "=:":
+            if i == 0 or source[i - 1] in "=:":
                 causes.add("tilde")
         out.append(c)
         i += 1
@@ -275,93 +193,33 @@ def make_word(source: str) -> Word:
     return Word(text=text, literal=not causes, source=source)
 
 
-def _normal_path(path: str) -> tuple[str, bool]:
-    """``path`` with repeated slashes and ``.`` components removed; and whether it has a
-    ``..`` component."""
-    parts = path.split("/")
-    dotdot = ".." in parts
-    kept = [p for p in parts if p not in ("", ".")]
-    if path.startswith("/"):
-        return "/" + "/".join(kept), dotdot
-    return "/".join(kept), dotdot
-
-
 def has_device_socket(text: str) -> bool:
     collapsed = re.sub(r"/+", "/", text)
     return any(name in collapsed for name in _DEV_SOCKETS)
 
 
-# --- Rule 4: redirects ---------------------------------------------------------------
+# --- redirects -----------------------------------------------------------------------
 
 
 def judge_redirect(
     descriptor: str | None, operator: str, target: Word | None
-) -> tuple[bool, str, bool, bool]:
-    """Rule 4. Returns ``(accepted, why, exempt, device_socket)``.
-
-    Accepted only when the descriptor is absent or a literal 0-2 and the target is a
-    dup/move/close of 0-2, ``/dev/null``/``stdin``/``stdout``/``stderr``,
-    ``/dev/tcp/…``/``/dev/udp/…``, or a literal file (an optional leading ``~``) that is
-    not under ``/dev``, ``/proc`` or ``/sys`` and has no ``..`` component.
-    """
-    if descriptor is not None and descriptor not in _LOW_FD:
-        return False, "descriptor other than 0, 1 or 2", False, False
-    if operator in _CLOSE_OPERATORS:
-        if target is not None:
-            return False, "close with a target", False, False
-        return True, "", False, False
-    if target is None:
-        return False, "no target", False, False
-    _, causes = lex_word(target.source)
+) -> tuple[bool, bool]:
+    """``(exempt, device_socket)`` for a file redirect. Exempt are the forms that write
+    nowhere new: ``>/dev/null``, ``2>&1``, ``1>&2``, ``>&2``."""
+    if target is None or not target.literal:
+        return False, False
     text = target.text
     if operator in (">&", "<&"):
-        if not causes and re.fullmatch(r"[012]-?|-", text):
-            exempt = (descriptor, operator, text) in (
-                ("2", ">&", "1"),
-                ("1", ">&", "2"),
-                (None, ">&", "2"),
-            )
-            return True, "", exempt, False
-        if not causes and re.fullmatch(r"[0-9]+-?", text):
-            return False, "duplicates a descriptor other than 0, 1 or 2", False, False
-        if operator == "<&" or descriptor is not None:
-            return False, "duplicates something other than 0, 1 or 2", False, False
-        # `>&file` sends stdout and stderr to a file: judged as a file target below.
-    if causes - {"leading-tilde"}:
-        return False, "target is not a literal path", False, False
-    path, dotdot = _normal_path(text)
-    if dotdot:
-        return False, "target has a '..' component", False, False
-    if ("leading-tilde" in causes or not text.startswith("/")) and _may_be_descriptor(path):
-        return False, "target may be descriptor 3 or higher (relative to the cwd or ~)", False, False
-    if "leading-tilde" not in causes and text.startswith("/"):
-        if path in _DEV_NAMES:
-            exempt = path == "/dev/null" and operator in _OUTPUT_FILE_OPERATORS
-            return True, "", exempt, False
-        if any(path.startswith(name) for name in _DEV_SOCKETS):
-            return True, "", False, True
-        if any(path == tree or path.startswith(tree + "/") for tree in _SYSTEM_TREES):
-            return False, "target is under /dev, /proc or /sys", False, False
-    return True, "", False, False
-
-
-def _may_be_descriptor(path: str) -> bool:
-    """Whether a relative (or ``~``) target can name a descriptor of 3 or more: its last
-    component is a number of 3 or more, alone (``3``, with the cwd at ``/dev/fd``) or in
-    an ``fd`` directory (``fd/3``, ``self/fd/3``, ``dev/fd/3``)."""
-    parts = [p for p in path.lstrip("~").split("/") if p]
-    if not parts or not parts[-1].isdigit() or int(parts[-1]) < 3:
-        return False
-    return len(parts) == 1 or parts[-2] == "fd"
-
-
-def _is_relative_target(operator: str, target: Word | None, accepted: bool) -> bool:
-    """An accepted file target that the cwd or ``~`` places (not a dup of 0-2)."""
-    if not accepted or target is None:
-        return False
-    if operator in (">&", "<&") and re.fullmatch(r"[012]-?|-", target.text):
-        return False
-    return target.source.startswith("~") or not target.text.startswith("/")
+        exempt = (descriptor, operator, text) in (
+            ("2", ">&", "1"),
+            ("1", ">&", "2"),
+            (None, ">&", "2"),
+        )
+        return exempt, False
+    path = re.sub(r"/+", "/", text)
+    if path == "/dev/null" and operator in _OUTPUT_FILE_OPERATORS:
+        return True, False
+    return False, has_device_socket(path)
 
 
 def _is_output(descriptor: str | None, operator: str, kind: str) -> bool:
@@ -372,9 +230,6 @@ def _is_output(descriptor: str | None, operator: str, kind: str) -> bool:
     return True
 
 
-# --- Rule 1: trusting the tree -------------------------------------------------------
-
-
 def _iter_nodes(root: tree_sitter.Node) -> Iterator[tree_sitter.Node]:
     stack = [root]
     while stack:
@@ -383,119 +238,7 @@ def _iter_nodes(root: tree_sitter.Node) -> Iterator[tree_sitter.Node]:
         stack.extend(reversed(node.children))
 
 
-def _masks(root: tree_sitter.Node, size: int) -> tuple[bytearray, bytearray]:
-    """Two byte masks over the source: ``single`` (inside single or ANSI-C quotes) and
-    ``quoted`` (also inside double-quoted text, here-doc text and comments)."""
-    single = bytearray(size)
-    quoted = bytearray(size)
-    bodies, spans = [], []
-    for node in _iter_nodes(root):
-        if node.type == "heredoc_body":
-            bodies.append(node)
-        elif node.type in ("raw_string", "ansi_c_string"):
-            spans.append((node, True))
-        elif node.type in ("string_content", "heredoc_content", "comment"):
-            spans.append((node, False))
-    for body in bodies:
-        width = body.end_byte - body.start_byte
-        quoted[body.start_byte : body.end_byte] = b"\x01" * width
-        for child in body.named_children:
-            if child.type != "heredoc_content":
-                width = child.end_byte - child.start_byte
-                quoted[child.start_byte : child.end_byte] = bytes(width)
-    for node, is_single in spans:
-        width = node.end_byte - node.start_byte
-        quoted[node.start_byte : node.end_byte] = b"\x01" * width
-        if is_single:
-            single[node.start_byte : node.end_byte] = b"\x01" * width
-    return single, quoted
-
-
-def _escaped(source: bytes, i: int) -> bool:
-    count = 0
-    while i - count - 1 >= 0 and source[i - count - 1] == 0x5C:
-        count += 1
-    return count % 2 == 1
-
-
-def _heredoc_runs(source: bytes) -> list[tuple[int, int]]:
-    """Every run of exactly two ``<`` in the text: what bash reads as a here-doc
-    operator wherever ``<<`` is an operator at all."""
-    runs, i, n = [], 0, len(source)
-    while i < n:
-        if source[i] == 0x3C:
-            j = i
-            while j < n and source[j] == 0x3C:
-                j += 1
-            if j - i == 2:
-                runs.append((i, j))
-            i = j
-        else:
-            i += 1
-    return runs
-
-
-def _bracket_redirects(node: tree_sitter.Node) -> list[tree_sitter.Node]:
-    """The redirect-operator tokens inside a single-bracket test (``[ x > y ]``).
-    tree-sitter-bash reads them as test operators; bash runs ``[`` as a command, so for
-    bash they are redirections. ``[[ … ]]`` compares strings and is not affected."""
-    if node.type != "test_command" or not node.children or node.children[0].type != "[":
-        return []
-    return [n for n in _iter_nodes(node) if not n.is_named and n.type in REDIRECT_OPERATORS]
-
-
-def untrusted_features(tree: tree_sitter.Tree, source: bytes) -> tuple[str, ...]:
-    """Rule 1. The features that make the tree untrusted (empty means trusted)."""
-    root = tree.root_node
-    found: list[str] = []
-
-    def note(feature: str) -> None:
-        if feature not in found:
-            found.append(feature)
-
-    heredocs = []
-    for node in _iter_nodes(root):
-        if node.is_error or node.type == ERROR_KIND:
-            note("syntax error")
-        if node.is_missing:
-            note("missing token")
-        if node.type == "heredoc_start":
-            text = node.text.decode("utf-8", "surrogatepass")
-            if not (_PLAIN_DELIMITER.fullmatch(text) or _QUOTED_DELIMITER.fullmatch(text)):
-                note("here-doc delimiter is not a plain or fully quoted word")
-        if node.type == "heredoc_redirect":
-            heredocs.append(node)
-        if not node.is_named and node.type == "<<-":
-            note("here-doc with <<-")
-        if _bracket_redirects(node):
-            note("'<' or '>' inside [ ], which bash reads as a redirection")
-    single, quoted = _masks(root, len(source))
-    lines: dict[int, int] = {}
-    for start, _ in _heredoc_runs(source):
-        if quoted[start] or _escaped(source, start):
-            continue
-        if source[start + 2 : start + 3] == b"-":
-            note("here-doc with <<-")
-        line = source.count(b"\n", 0, start)
-        lines[line] = lines.get(line, 0) + 1
-    if any(count > 1 for count in lines.values()):
-        note("more than one here-doc on one line")
-    if sum(lines.values()) != len(heredocs):
-        note("here-doc the parser did not place")
-    for i in range(len(source) - 1):
-        pair = source[i : i + 2]
-        if pair == b"\\\n" and not single[i]:
-            note("backslash-newline")
-        elif pair[1:] == b"(" and pair[:1] in (b"?", b"*", b"+", b"@", b"!"):
-            if not quoted[i] and not _escaped(source, i):
-                note("extglob pattern")
-        elif pair == b"${" and not single[i]:
-            if source[i + 2 : i + 3] in (b" ", b"\t", b"\n", b"|"):
-                note("bash 5.3 ${ } substitution")
-    return tuple(found)
-
-
-# --- Rule 2: the walk ----------------------------------------------------------------
+# --- the walk ------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -512,9 +255,7 @@ class Walker:
     def __init__(self, source: bytes, layer: ShellLayer) -> None:
         self.source = source
         self.layer = layer
-        self.visits: dict[tuple[int, int, int], int] = {}
         self.work = 0
-        self.heredoc_runs = _heredoc_runs(source)
 
     def text(self, node: tree_sitter.Node) -> str:
         return self.source[node.start_byte : node.end_byte].decode("utf-8", "surrogatepass")
@@ -524,16 +265,12 @@ class Walker:
 
     def visit(self, node: tree_sitter.Node, ctx: Ctx, depth: int, bound: tuple = ()):
         self.work += 1
-        if self.work > MAX_WORK:
-            raise GateFailure("work budget exceeded")
-        if depth > MAX_DEPTH:
-            raise GateFailure("nesting too deep")
+        if self.work > MAX_WORK or depth > MAX_DEPTH:
+            raise _Stop
         kind = ERROR_KIND if node.is_error else node.type
         handler = HANDLERS.get(kind)
         if handler is None:
-            raise GateFailure("unhandled node kind")
-        key = (node.id, node.start_byte, node.end_byte)
-        self.visits[key] = self.visits.get(key, 0) + 1
+            raise _Stop
         return handler(self, node, ctx, depth, bound)
 
     # Descriptor written right before a redirect operator that the tree did not attach
@@ -546,15 +283,6 @@ class Walker:
             return None
         return i, self.span(i, start)
 
-    def in_heredoc_run(self, start: int) -> bool:
-        """True when ``start`` is inside a ``<<`` run with no descriptor in
-        front of it, or a literal 0-2 (``3<<E`` and ``{x}<<E`` are never exempt)."""
-        for a, b in self.heredoc_runs:
-            if a <= start < b:
-                token = self.adjacent_token(a)
-                return token is None or token[1] in _LOW_FD
-        return False
-
 
 def _children(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> None:
     if bound:
@@ -564,7 +292,7 @@ def _children(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> 
 
 
 def _apply_compound(walker: Walker, bound: tuple, ctx: Ctx, depth: int) -> Ctx:
-    """Redirects on a compound command: judge them, and let them set the stdin the
+    """Redirects on a compound command: record them, and let them set the stdin the
     commands inside inherit."""
     stdin = ctx.stdin
     for node in bound:
@@ -588,69 +316,9 @@ def _stdin_after(record: Redirect, stdin: Stdin) -> Stdin:
         fd = record.descriptor.lstrip("0") or "0"
     if fd != "0":
         return stdin
-    if (
-        record.operator == "<"
-        and record.accepted
-        and record.target is not None
-        and record.target.literal
-    ):
+    if record.operator == "<" and record.target is not None and record.target.literal:
         return Stdin("file", record.target.text)
     return UNKNOWN
-
-
-def _error(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> None:
-    for child in node.children:
-        loose = (not child.is_named and child.type in REDIRECT_OPERATORS) or (
-            child.child_count == 0 and child.is_error
-        )
-        if loose:
-            text = walker.text(child)
-            if child.is_named and not any(c in text for c in "<>"):
-                continue
-            walker.layer.redirects.append(
-                Redirect(
-                    kind="loose",
-                    descriptor=None,
-                    operator=child.type,
-                    target=None,
-                    accepted=True,
-                    why="",
-                    output=False,
-                    exempt=False,
-                    device_socket=False,
-                    feed=None,
-                    display=text,
-                    heredoc_operator=walker.in_heredoc_run(child.start_byte),
-                    start=child.start_byte,
-                )
-            )
-    _children(walker, node, ctx, depth, bound)
-
-
-def _test_command(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> None:
-    """``[ … ]``: each ``<``/``>`` inside is a redirection bash would perform, with a
-    target the gate did not judge, so it is recorded as rejected (Rule 1 also marks it)."""
-    for token in _bracket_redirects(node):
-        after = token.next_sibling
-        end = after.end_byte if after is not None else token.end_byte
-        walker.layer.redirects.append(
-            Redirect(
-                kind="loose",
-                descriptor=None,
-                operator=token.type,
-                target=None,
-                accepted=False,
-                why="'<' or '>' inside [ ], which bash reads as a redirection",
-                output=False,
-                exempt=False,
-                device_socket=False,
-                feed=None,
-                display=walker.span(token.start_byte, end),
-                heredoc_operator=False,
-                start=token.start_byte,
-            )
-        )
-    _children(walker, node, ctx, depth, bound)
 
 
 def _pipeline(walker: Walker, node, ctx: Ctx, depth: int, bound: tuple = ()) -> None:
@@ -901,13 +569,8 @@ def _file_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Redirect]
     descriptor = _descriptor(walker, node)
     operator = _operator(node)
     targets = node.children_by_field_name("destination")
-    missing = any(t.is_missing or t.has_error for t in targets)
     target = make_word(walker.text(targets[0])) if len(targets) == 1 else None
-    if missing or len(targets) > 1:
-        accepted, why = False, "target the parser could not read"
-        exempt = socket = False
-    else:
-        accepted, why, exempt, socket = judge_redirect(descriptor, operator, target)
+    exempt, socket = judge_redirect(descriptor, operator, target)
     op_node = next((c for c in node.children if c.type == operator), None)
     op_start = op_node.start_byte if op_node is not None else node.start_byte
     record = Redirect(
@@ -915,16 +578,11 @@ def _file_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Redirect]
         descriptor=descriptor,
         operator=operator,
         target=target,
-        accepted=accepted,
-        why=why,
         output=_is_output(descriptor, operator, "file_redirect"),
         exempt=exempt,
         device_socket=socket or (target is not None and has_device_socket(target.text)),
         feed=None,
         display=(descriptor or "") + walker.span(op_start, node.end_byte),
-        heredoc_operator=walker.in_heredoc_run(op_start),
-        start=node.start_byte,
-        relative=_is_relative_target(operator, target, accepted),
     )
     walker.layer.redirects.append(record)
     return [record]
@@ -970,25 +628,16 @@ def _heredoc_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Redire
             feed = Stdin("literal", text)
         elif _PLAIN_DELIMITER.fullmatch(delim) and not any(c in text for c in "$`\\"):
             feed = Stdin("literal", text)
-    accepted, why = True, ""
-    if descriptor is not None and descriptor not in _LOW_FD:
-        accepted, why = False, "descriptor other than 0, 1 or 2"
     record = Redirect(
         kind="heredoc_redirect",
         descriptor=descriptor,
         operator=operator,
         target=None,
-        accepted=accepted,
-        why=why,
         output=False,
         exempt=False,
         device_socket=False,
         feed=feed,
-        display=(descriptor or "")
-        + operator
-        + (walker.text(delimiter) if delimiter else ""),
-        heredoc_operator=True,
-        start=node.start_byte,
+        display=(descriptor or "") + operator + (walker.text(delimiter) if delimiter else ""),
     )
     walker.layer.redirects.append(record)
     return [record, *nested]
@@ -1002,9 +651,6 @@ def _herestring_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Red
     if pieces:
         word = make_word(walker.span(pieces[0].start_byte, pieces[-1].end_byte))
     feed = Stdin("literal", word.text) if word is not None and word.literal else UNKNOWN
-    accepted, why = True, ""
-    if descriptor is not None and descriptor not in _LOW_FD:
-        accepted, why = False, "descriptor other than 0, 1 or 2"
     if word is not None:
         walker.layer.words.append(word)
     record = Redirect(
@@ -1012,15 +658,11 @@ def _herestring_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Red
         descriptor=descriptor,
         operator="<<<",
         target=word,
-        accepted=accepted,
-        why=why,
         output=False,
         exempt=False,
         device_socket=word is not None and has_device_socket(word.text),
         feed=feed,
         display=walker.text(node),
-        heredoc_operator=False,
-        start=node.start_byte,
     )
     walker.layer.redirects.append(record)
     return [record]
@@ -1029,10 +671,9 @@ def _herestring_redirect(walker: Walker, node, ctx, depth, bound=()) -> list[Red
 HANDLERS: dict[str, Handler] = {kind: _children for kind in named_kinds()}
 HANDLERS.update(
     {
-        ERROR_KIND: _error,
+        ERROR_KIND: _children,
         "pipeline": _pipeline,
         "negated_command": _negated,
-        "test_command": _test_command,
         "redirected_statement": _redirected,
         "command": _simple,
         "declaration_command": _simple,
@@ -1048,114 +689,27 @@ HANDLERS.update(
 )
 
 
-def _check_walk(tree: tree_sitter.Tree, walker: Walker) -> None:
-    """Rule 2, on every classification: every named node visited exactly once, and one
-    invocation per simple command node."""
-    named = 0
-    simple = 0
-    for node in _iter_nodes(tree.root_node):
-        if not node.is_named:
-            continue
-        named += 1
-        if node.type in SIMPLE_KINDS:
-            simple += 1
-        if walker.visits.get((node.id, node.start_byte, node.end_byte)) != 1:
-            raise GateFailure("a node was not walked exactly once")
-    if named != len(walker.visits):
-        raise GateFailure("the walk and the tree disagree")
-    if simple != len(walker.layer.invocations):
-        raise GateFailure("a simple command gave no invocation")
-
-
 def shell_layer(source: str) -> ShellLayer:
-    """Parse and walk ``source``. Raises ``GateFailure`` for decision C."""
-    data = source.encode("utf-8", "surrogatepass")
-    if len(data) > MAX_INPUT_BYTES:
-        raise GateFailure("input over 8 KiB")
-    tree = parse_source(data)
-    layer = ShellLayer(untrusted=untrusted_features(tree, data))
-    walker = Walker(data, layer)
-    walker.visit(tree.root_node, Ctx(stdin=TERMINAL), 0)
-    _check_walk(tree, walker)
-    _unplaced_targets(layer)
-    if layer.untrusted:
-        # No stdin fact from a tree the gate does not trust.
-        layer.invocations = [replace(i, stdin=UNKNOWN) for i in layer.invocations]
-    elif any(_may_rewire_stdin(i) for i in layer.invocations):
-        # A command that can change the shell's own stdin (`exec </x; sudo tee /y`) makes
-        # every other command's stdin unproven: it may run after it, in source order or on
-        # a later loop pass.
-        layer.invocations = [
-            i if _may_rewire_stdin(i) else replace(i, stdin=UNKNOWN)
-            for i in layer.invocations
-        ]
-    return layer
-
-
-# Assignments that move where a relative or `~` redirect target lands.
-_PLACE_NAMES = ("HOME", "PWD", "OLDPWD")
-_CWD_CHANGERS = ("cd", "pushd")
-
-
-def _placed(word: Word | None) -> bool:
-    """A literal directory that keeps relative targets out of ``/dev``, ``/proc`` and
-    ``/sys``: no ``..`` component, not ``-`` or ``+N``/``-N`` (the dir stack), and, when
-    absolute, not under those trees."""
-    if word is None or not word.literal or word.text[:1] in ("-", "+"):
-        return False
-    path, dotdot = _normal_path(word.text)
-    if dotdot:
-        return False
-    return not any(path == tree or path.startswith(tree + "/") for tree in _SYSTEM_TREES)
-
-
-def _cd_placed(invocation: Invocation, head: Word) -> bool:
-    """``cd``/``pushd`` with no operand (``$HOME``) or one operand ``_placed`` accepts,
-    after the options bash takes (``-L``, ``-P``, ``-e``, ``-@``)."""
-    words = list(invocation.words)
-    operands = words[words.index(head) + 1 :]
-    while operands and operands[0].literal and re.fullmatch(r"-[LPe@]+", operands[0].text):
-        operands.pop(0)
-    if operands and operands[0].literal and operands[0].text == "--":
-        operands.pop(0)
-    return not operands or (len(operands) == 1 and _placed(operands[0]))
-
-
-def _unplaced_targets(layer: ShellLayer) -> None:
-    """Rule 4: reject accepted relative and ``~`` targets when the input itself can move
-    the cwd or ``HOME`` somewhere the gate cannot place (``cd "$d" && echo x >f``,
-    ``HOME=/dev; echo x >~/sda``): in source order or on a later loop pass, it cannot
-    prove where they land. ``cd /tmp`` and ``HOME=/home/u`` keep them out of ``/dev``,
-    ``/proc`` and ``/sys``; where the session's own cwd is, is the live layer's check."""
-    if not any(r.relative for r in layer.redirects):
-        return
-    moves = bool(layer.functions) or any(
-        not a.name
-        or a.name == "CDPATH"
-        or (a.name in _PLACE_NAMES and not _placed(a.value))
-        for a in layer.assignments
-    )
-    for invocation in layer.invocations:
-        head = _head(invocation)
-        if head is None:
-            continue
-        if not head.literal or head.text in ("popd", *_SHELL_RUNNERS, *_CODE_LATER):
-            moves = True
-        elif head.text in _CWD_CHANGERS and not _cd_placed(invocation, head):
-            moves = True
-    if not moves:
-        return
-    why = "target relative to a cwd or ~ the command moves where the gate cannot place it"
-    fixed = {
-        id(r): replace(r, accepted=False, why=why, relative=False)
-        for r in layer.redirects
-        if r.relative
-    }
-    layer.redirects = [fixed.get(id(r), r) for r in layer.redirects]
-    layer.invocations = [
-        replace(i, redirects=tuple(fixed.get(id(r), r) for r in i.redirects))
-        for i in layer.invocations
-    ]
+    """Parse and walk ``source``. Never raises: when the walk cannot finish, the layer
+    comes back with ``analysed = False`` and nothing in it."""
+    try:
+        data = source.encode("utf-8", "surrogatepass")
+        if len(data) > MAX_INPUT_BYTES:
+            raise _Stop
+        tree = parse_source(data)
+        layer = ShellLayer()
+        walker = Walker(data, layer)
+        walker.visit(tree.root_node, Ctx(stdin=TERMINAL), 0)
+        if any(_may_rewire_stdin(i) for i in layer.invocations):
+            # A command that can change the shell's own stdin (`exec </x; sudo tee /y`)
+            # makes every other command's stdin unproven.
+            layer.invocations = [
+                i if _may_rewire_stdin(i) else replace(i, stdin=UNKNOWN)
+                for i in layer.invocations
+            ]
+        return layer
+    except Exception:
+        return ShellLayer(analysed=False)
 
 
 def _head(invocation: Invocation) -> Word | None:

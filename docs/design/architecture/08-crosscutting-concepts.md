@@ -52,7 +52,8 @@ Taint is about **who could have written the text**, not whether it looks harmful
 ## 8.3 The policy gate and risk classes
 
 Every command, typed or proposed (including raw `\cmd` input), is classed by the
-procedure in [`specs/policy-gate/v1.md`](../specs/policy-gate/v1.md) (ADR-0013):
+procedure in [`specs/policy-gate/v2.md`](../specs/policy-gate/v2.md) (ADR-0027, which
+supersedes ADR-0013):
 
 | Class | Examples | Behaviour |
 |---|---|---|
@@ -62,13 +63,20 @@ procedure in [`specs/policy-gate/v1.md`](../specs/policy-gate/v1.md) (ADR-0013):
 | destructive | `rm -r`, `dd`, `mkfs`, `chmod -R` | explicit confirm |
 | privileged | `sudo`, `pkexec`, `su`, `doas` | always confirm |
 
-Read-only is an **allowlist**: an unknown command, an unlisted option, a prefix assignment,
-a redirection or a non-literal command word makes it at least mutating. Before anything
-runs unconfirmed, every command word is resolved against the **live session snapshot**:
-aliases are expanded, and a function, a non-system executable or changed session hooks
-make it at least mutating. A few things are rejected outright (sudo `-S`/`-p`/`-A`, pipes
-into sudo, redirections to fd 3). The model's label can raise a class, never lower it.
-Unparseable means at least mutating.
+Read-only is granted only inside a closed **grammar** — pipelines of simple commands made
+of bare words or simply quoted strings, with four fixed redirect spellings, nothing bash
+would expand — recognised without a parser library, so the words the gate sees are the
+words bash runs. Inside the grammar, read-only is an **allowlist**: an unknown command or
+an unlisted option makes it at least mutating. Before anything runs unconfirmed, every
+command word is resolved against the **live session snapshot**: aliases are expanded (and
+must land inside the grammar), and a function, a non-system executable or changed session
+hooks make it at least mutating. Anything outside the grammar (`~`, globs, `$`,
+assignments, compound commands, …) is at least mutating and is confirmed as written; the
+gate does not try to understand it. A few things are rejected outright by a text scan
+that over-approximates (sudo `-S`/`-p`/`-A`, pipes into sudo, any spelling of a
+redirection to descriptor 3 or above). tree-sitter-bash is used only to word the confirm
+(destructive, session-altering) and can fail without consequence. The model's label can
+raise a class, never lower it.
 
 ### Confirm levels
 

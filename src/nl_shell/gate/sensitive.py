@@ -1,4 +1,4 @@
-"""Sensitive locations (spec ``policy-gate/v1`` §8): a no-op stub (issue #196).
+"""Sensitive locations (spec ``policy-gate/v2`` §8): a no-op stub (issue #196).
 
 #190 replaces it (``targets/<id>/sensitive.toml``, ADR-0025). The pipeline already calls
 ``check`` for every simple command; ``None`` means "no change".

@@ -23,9 +23,10 @@ user ─> REPL ─> command model (local) ─> policy gate ─> persistent bash 
   socket (ADR-0018). It proposes one command as schema-constrained JSON from the user's
   request plus a state block (cwd, last command, exit code, truncated output, filtered
   env, retrieved history).
-- **Policy gate**: deterministic. tree-sitter-bash parse, a read-only **allowlist**, static
-  rules, and every command word checked against the **live session snapshot** (ADR-0013,
-  spec `policy-gate/v1`). Classes: read-only → runs; mutating and session-altering →
+- **Policy gate**: deterministic. Read-only only for commands inside a closed **grammar**,
+  then a read-only **allowlist** and every command word checked against the **live
+  session snapshot**; rejections and `privileged` from a text scan; everything else
+  confirmed as written (ADR-0027, spec `policy-gate/v2`). Classes: read-only → runs; mutating and session-altering →
   confirm; destructive → explicit confirm; privileged → always confirm. The model's risk
   label can only raise the class.
 - **PTY session**: one persistent bash. Completion, exit codes and session snapshots arrive
@@ -110,9 +111,9 @@ Trusted:
 
 ## What must hold
 
-- **Nothing that isn't read-only runs without a confirm.** Read-only means on the
-  allowlist, passing the static rules, and checked against the live session snapshot
-  (ADR-0013, spec `policy-gate/v1`). Read-only commands may run unconfirmed even after
+- **Nothing that isn't read-only runs without a confirm.** Read-only means inside the
+  read-only grammar, on the allowlist, passing the per-command rules, and checked
+  against the live session snapshot (ADR-0027, spec `policy-gate/v2`). Read-only commands may run unconfirmed even after
   untrusted text was read (ADR-0016).
 - **Privileged commands always need a confirm.** A privileged proposal made with untrusted
   text in the prompt is never shown or run: nl-shell re-derives it from trusted context
@@ -168,31 +169,25 @@ Trusted:
   the reader hands on is built from nl-shell's templates and the kept names
   (reader-schema/v1).
 - **Model output is never piped into the shell without going through the gate.**
-- **The gate assumes nothing is safe until it has proof** (`nl_shell.gate`, #196). Its
-  shell layer parses with the pinned tree-sitter-bash and holds six properties. (1) The
-  tree is trusted only with no `ERROR` or `MISSING` node and none of the features
-  tree-sitter-bash reads differently from bash (backslash-newline outside single quotes,
-  a here-doc delimiter that is not a plain or fully quoted word, `<<-`, two here-docs
-  started on one line, unquoted extglob openers, bash 5.3 `${ ` / `${|`); otherwise a
-  proposal is rejected, typed input is at least `mutating` ("unparseable"), every
-  redirect except the §2 exempt forms, here-docs and parsed here-strings is rejected,
-  and no stdin fact is kept. (2) Every named node is walked exactly once and every simple command
-  gives one invocation, checked on every classification; a node kind with no handler,
-  or a walk that misses a node, is decision C (`privileged`, rejected, "could not
-  class"). (3) Stdin is `terminal`, `pipe`, `file` or `literal` only in the listed
-  forms, else `unknown`, which consumers treat as the worst case; a command that can
-  change the shell's own stdin (`exec` with a redirect, `eval`, `source`, a non-literal
-  command word) makes every other command's stdin `unknown`; a word is literal only
-  when bash would expand nothing in it. (4) A redirect is accepted only with no
-  descriptor or a literal 0-2 and a target that is a dup or close of 0-2, a literal
-  path outside `/dev`, `/proc` and `/sys` with no `..` (apart from `/dev/null`,
-  `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, `/dev/tcp/…`, `/dev/udp/…`); every other
-  redirect is rejected, so fd 3 cannot be reached by a literal descriptor, a dup, a
-  `/dev/fd` or `/proc/*/fd` path, or a non-literal target. (5) Input over 8 KiB is
-  decision C before it is parsed, and the walk has a node and depth budget; any internal
-  error is decision C, and `classify` never raises. (6) No reason string carries a raw
+- **The gate grants read-only only inside a closed grammar** (`nl_shell.gate`, ADR-0027,
+  spec `policy-gate/v2`). (1) The only path to `read-only` is the grammar recogniser
+  (`gate/grammar.py`): pipelines of simple commands made of bare words from a closed
+  ASCII class or simply quoted strings, with four fixed redirect spellings; bash performs
+  no expansion on such strings, so the recogniser's words are bash's words, and the test
+  suite checks that against bash itself. Anything outside the grammar is at least
+  `mutating`, shown verbatim, confirmed. (2) Rejections (descriptors 3 and above in every
+  spelling, the sudo rules, `SUDO_PROMPT`/`SUDO_ASKPASS`, unreadable declaration operands,
+  root-shell proposals) and the `privileged` class come from a text scan over the command
+  with single-quoted runs blanked (`gate/scan.py`) that over-approximates: anything that
+  could be the construct counts, so a false positive costs a rewrite and a false negative
+  needs a spelling the patterns do not cover (report those). (3) The tree-sitter walk
+  (`gate/parse.py`, `gate/advice.py`) is advisory: it can raise the class and word the
+  confirm, never grant read-only or decide a rejection, and any failure of it leaves the
+  command a plain `mutating` confirm. (4) Any internal error of `classify` is a rejected
+  `privileged` result; `classify` never raises. (5) No reason string carries a raw
   control or hidden character from the input. The command layer, §7 and §8 are still
-  stubs that fail closed: every simple command is at least `mutating`.
+  stubs that fail closed: every grammar-accepted simple command is `mutating`, "not
+  allowlisted", so nothing is read-only yet.
 - **The command model and the reader have no network**; the model server listens only on
   a `0600` Unix socket (ADR-0018).
 - **Locally complete**: no telemetry and no outbound connection in the default config.
@@ -320,7 +315,7 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
 The test suite: `python3 -m pytest` from the repo root (CONTRIBUTING.md). Tests run with
 a temporary HOME and guard scripts ahead of `sudo`; tests marked `sudo` or `vm` need
 the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). The gate's
-contract and its test vectors are in `docs/design/specs/policy-gate/v1.md`; the PTY
+contract and its test vectors are in `docs/design/specs/policy-gate/v2.md`; the PTY
 protocol's in `docs/design/specs/pty-protocol/v1.md`. The session tests
 (`tests/test_session.py`) need only bash (5.1 or later): they start a real bash on a PTY,
 with no VM and no sudo. The terminal-ownership tests (`tests/test_session_terminal.py`,

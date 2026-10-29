@@ -9,7 +9,7 @@ Choosing the target ("Choosing the target"): the target whose os-release ``ID`` 
 ``VERSION_ID`` match exactly, with no ``ID_LIKE`` or nearby-version fallback; or the target
 the user names (``--target`` or ``target =`` in config.toml). A named target that does not
 match this OS is still used, and the selection records that it does not match, with the
-reason spec ``policy-gate/v1`` §7.7 gives. The gate (#12) reads that state.
+reason spec ``policy-gate/v2`` §7.7 gives. The gate (#12) reads that state.
 """
 
 from __future__ import annotations

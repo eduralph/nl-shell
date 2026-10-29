@@ -1,28 +1,140 @@
 # Policy-gate conformance vectors for the ubuntu-26.04 target
-# (docs/design/specs/policy-gate/v1.md, Conformance). Loaded by nl_shell.gate.vectors.
+# (docs/design/specs/policy-gate/v2.md, Conformance). Loaded by nl_shell.gate.vectors.
 #
-# This file holds the rows landed so far: the shell-layer rows of #196. It is not the
-# complete set the spec's Conformance section asks for; it becomes complete only when
-# #192 (live-session resolution) lands. #197 and #198 add their rows here.
+# This file holds the rows that can be asserted with the command layer still a stub
+# (#196): nothing is read-only yet, so a row whose expected class is read-only in the spec
+# appears here with `mutating` and the reason "not allowlisted" and is updated by #198.
+# #192 (live-session resolution) adds the rows that need a session.
 #
 # Keys: command, origin ("proposal" | "typed"), rejected; class (required unless
 # rejected, absent when rejected); optional reason (a substring some reason must
 # contain), label (the model's label) and row (the spec's row number).
+
+# --- in the grammar, not yet allowlisted (rows 1, 2, 28, 44, 51, 52 expect read-only
+# --- once #198 and #192 land)
+
+[[vector]]
+row = 1
+command = "ls -la"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
+
+[[vector]]
+row = 28
+command = "systemctl status ssh"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
+
+[[vector]]
+row = 44
+command = "cat README.md"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
+
+# --- outside the grammar
+
+[[vector]]
+row = 2
+command = "du -sh ~/*"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "outside the read-only grammar"
+
+[[vector]]
+row = 16
+command = "$'\\x72m' -rf ~"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "command word is not a literal"
+
+[[vector]]
+row = 17
+command = "\"r\"m -rf ~"
+origin = "typed"
+rejected = false
+class = "destructive"
+reason = "rm -r"
+
+[[vector]]
+row = 18
+command = "ls; rm -rf ~"
+origin = "typed"
+rejected = false
+class = "destructive"
+reason = "rm -r"
+
+[[vector]]
+row = 31
+command = "if true; then"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "outside the read-only grammar"
+
+# --- static rules and advice
 
 [[vector]]
 row = 7
 command = "PAGER=sh git log"
 origin = "typed"
 rejected = false
-class = "mutating"
+class = "session-altering"
 reason = "prefix assignment"
+
+[[vector]]
+row = 8
+command = "git -c core.pager=sh log"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
+
+[[vector]]
+row = 9
+command = "find . -exec rm {} \\;"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "find runs a command"
+
+[[vector]]
+row = 10
+command = "awk 'BEGIN{system(\"id\")}'"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
+
+[[vector]]
+row = 11
+command = "sed '1e id' f"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
+
+[[vector]]
+row = 12
+command = "sort --compress-program=sh f"
+origin = "typed"
+rejected = false
+class = "mutating"
+reason = "not allowlisted"
 
 [[vector]]
 row = 13
 command = "LD_PRELOAD=./x.so ls"
 origin = "typed"
 rejected = false
-class = "mutating"
+class = "session-altering"
 reason = "prefix assignment"
 
 [[vector]]
@@ -42,12 +154,68 @@ class = "mutating"
 reason = "output redirection"
 
 [[vector]]
-row = 16
-command = "$'\\x72m' -rf ~"
+row = 24
+command = "sudo apt update"
+origin = "typed"
+rejected = false
+class = "privileged"
+reason = "sudo is privileged"
+
+[[vector]]
+row = 26
+command = "rm -rf build"
+origin = "typed"
+rejected = false
+class = "destructive"
+reason = "rm -r"
+
+[[vector]]
+row = 27
+command = "git status"
 origin = "typed"
 rejected = false
 class = "mutating"
-reason = "command word is not a literal"
+reason = "not allowlisted"
+
+[[vector]]
+row = 29
+command = "systemctl stop ssh"
+origin = "typed"
+rejected = false
+class = "destructive"
+reason = "systemctl stop"
+
+[[vector]]
+row = 32
+command = "env rm -rf x"
+origin = "typed"
+rejected = false
+class = "destructive"
+reason = "rm -r"
+
+[[vector]]
+row = 33
+command = "alias ll='ls -l'"
+origin = "typed"
+rejected = false
+class = "session-altering"
+reason = "alias"
+
+# --- rejections
+
+[[vector]]
+row = 21
+command = "sudo -S true"
+origin = "typed"
+rejected = true
+reason = "sudo -S"
+
+[[vector]]
+row = 22
+command = "echo pw | sudo -S true"
+origin = "typed"
+rejected = true
+reason = "pipe into sudo"
 
 [[vector]]
 row = 23
@@ -61,7 +229,7 @@ row = 25
 command = "echo hi >&3"
 origin = "typed"
 rejected = true
-reason = "redirection rejected"
+reason = "descriptor 3"
 
 [[vector]]
 row = 30
@@ -71,9 +239,30 @@ rejected = true
 reason = "hidden character"
 
 [[vector]]
-row = 31
-command = "if true; then"
+row = 53
+command = "sudo -i"
+origin = "proposal"
+rejected = true
+reason = "root shell"
+
+[[vector]]
+row = 54
+command = "sudo -i"
 origin = "typed"
 rejected = false
-class = "mutating"
-reason = "unparseable"
+class = "privileged"
+reason = "sudo is privileged"
+
+[[vector]]
+row = 55
+command = "exec 3>&-"
+origin = "typed"
+rejected = true
+reason = "descriptor 3"
+
+[[vector]]
+row = 56
+command = "echo x >/proc/self/fd/3"
+origin = "typed"
+rejected = true
+reason = "descriptor 3"
