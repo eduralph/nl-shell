@@ -17,8 +17,8 @@ agent-specific discipline.
 ## Change discipline
 
 - Every change starts from an issue on the open milestone, and the PR body
-  carries a closing reference (`Closes #NNN`) — the `require-linked-issue` check
-  enforces it.
+  links it: `Closes #NNN`, or `Refs #NNN` for partial work — the
+  `require-linked-issue` check enforces it.
 - One logical change per issue / branch / PR; split unrelated changes.
 - Commits are signed off (`git commit -s`, [DCO](DCO)) with a
   conventional-prefix subject (`fix:`, `feat:`, `docs:`, `ci:`, `chore:`) and a
@@ -29,7 +29,8 @@ agent-specific discipline.
 
 - Pin every action to a full commit hash with its release as a comment
   (`uses: actions/checkout@<40-char sha> # v7.0.1`), never to a tag or branch. Pick a
-  release at least two weeks old; Dependabot keeps pins current.
+  release at least 7 days old; Dependabot keeps pins current and waits the same 7 days
+  (`cooldown` in `.github/dependabot.yml`).
 - Give every `actions/checkout` `persist-credentials: false`, and each job only the
   `permissions:` it needs.
 - A job that branch protection requires is listed in `.github/required-checks.txt`. When
