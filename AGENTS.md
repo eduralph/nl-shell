@@ -24,3 +24,15 @@ agent-specific discipline.
   conventional-prefix subject (`fix:`, `feat:`, `docs:`, `ci:`, `chore:`) and a
   body that explains the why.
 - Keep the test suite green (the command is in [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+## Workflows
+
+- Pin every action to a full commit hash with its release as a comment
+  (`uses: actions/checkout@<40-char sha> # v7.0.1`), never to a tag or branch. Pick a
+  release at least two weeks old; Dependabot keeps pins current.
+- Give every `actions/checkout` `persist-credentials: false`, and each job only the
+  `permissions:` it needs.
+- A job that branch protection requires is listed in `.github/required-checks.txt`. When
+  you rename, add or drop one, change the file in the same PR and tell the maintainer to
+  re-apply the settings after the merge; it needs admin rights.
+- Scorecard reports unpinned actions and broad token permissions in the Security tab.
