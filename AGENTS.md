@@ -29,7 +29,8 @@ agent-specific discipline.
 
 - Pin every action to a full commit hash with its release as a comment
   (`uses: actions/checkout@<40-char sha> # v7.0.1`), never to a tag or branch. Pick a
-  release at least two weeks old; Dependabot keeps pins current.
+  release at least 7 days old; Dependabot keeps pins current and waits the same 7 days
+  (`cooldown` in `.github/dependabot.yml`).
 - Give every `actions/checkout` `persist-credentials: false`, and each job only the
   `permissions:` it needs.
 - A job that branch protection requires is listed in `.github/required-checks.txt`. When
