@@ -30,8 +30,9 @@ user ─> REPL ─> command model (local) ─> policy gate ─> persistent bash 
   confirm; destructive → explicit confirm; privileged → always confirm. The model's risk
   label can only raise the class.
 - **PTY session**: one persistent bash. Completion, exit codes and session snapshots arrive
-  on a separate control channel (fd 3) that printed text can't reach; commands are sent
-  byte-identically (ADR-0014, spec `pty-protocol/v1`). Keystrokes are forwarded unlogged
+  on a separate control channel (fd 3, an AF_UNIX socket with `SO_PASSCRED`) that printed
+  text can't reach and that only bash's own pid may write records to (ADR-0014, ADR-0028,
+  spec `pty-protocol/v2`); commands are sent byte-identically. Keystrokes are forwarded unlogged
   while a command runs. Sudo passthrough additionally stops capture (ADR-0015).
 - **Quarantined reader**: a separate request to the same model server that reads raw
   untrusted text and returns only fixed choices and validated names (ADR-0017, spec
@@ -154,7 +155,7 @@ Trusted:
 - **Background output can't reach the screen during a confirm.** Between commands, PTY
   output from background jobs is buffered and shown only outside a confirm, under
   `[background output]`; it is untrusted and never enters the state block (spec
-  `pty-protocol/v1` §6). Built so far (#120): the session keeps reading the PTY between
+  `pty-protocol/v2` §6). Built so far (#120): the session keeps reading the PTY between
   commands, holds what arrives in a 64 KiB buffer with a dropped-byte count, never writes
   it to the terminal and never puts it in a command's result; it hands the block to its
   caller only on request. Not built yet: the "background output waiting" notice in the
@@ -247,8 +248,11 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
   something other than what runs, or a mislabelled class.
 - **A root shell the user opens** (`sudo -i` typed by hand) runs in full passthrough;
   nl-shell can't see or gate anything inside it, and says so (ADR-0015).
-- **Child processes inherit the control channel (fd 3).** Only code running as the user can
-  use it, which is out of scope.
+- **Child processes inherit the control channel (fd 3)**, but the kernel attests the
+  writer of every record (`SO_PASSCRED`, ADR-0028): a `D`, snapshot or `E` record from
+  any pid but bash's degrades the session by name. What a child can still do with fd 3
+  is write `S` records (advisory) or garbage that degrades the session: denial of
+  service by code running as the user, which is out of scope.
 - **The PTY session runs with the user's own rights.** There is no sandbox around the shell.
 - **The session core claims only the closed list in pty-protocol v1 §1.3.** These are
   the routes around it that are known and not closed:
@@ -264,8 +268,12 @@ bug only if nl-shell's use of it is what makes it exploitable). The training pip
     read on an fd other than 0 (`read -u 2 x`) is not seen, so `run()` without a timeout
     can wait forever.
   - **The outside checks and the prompt rule are Linux-only** (`/proc`, #138).
-  - **Fake fd-3 records.** A command (or a process it starts) can write records to fd 3
-    itself (#135).
+  - **Fake fd-3 records from the main shell.** A process the command starts can no
+    longer forge a record (ADR-0028, above). The confirmed command's own text can: it
+    runs in bash's pid, which is the hooks' pid, and no in-process mechanism separates
+    them. The gate's text scan rejects every spelling of a redirection to descriptor 3
+    or above before such a command is sent (`policy-gate/v2` §5.1); a spelling the
+    patterns miss is a report (#135, narrowed).
   - **A background job changing the terminal settings** between the last pre-paste
     reading and the write of the paste is not seen (#147).
   - **A process in another session reading the PTY** (started with `setsid`, with the
@@ -316,7 +324,7 @@ The test suite: `python3 -m pytest` from the repo root (CONTRIBUTING.md). Tests 
 a temporary HOME and guard scripts ahead of `sudo`; tests marked `sudo` or `vm` need
 the throwaway reference VM (`NL_SHELL_TEST_VM=1`, never on your own machine). The gate's
 contract and its test vectors are in `docs/design/specs/policy-gate/v2.md`; the PTY
-protocol's in `docs/design/specs/pty-protocol/v1.md`. The session tests
+protocol's in `docs/design/specs/pty-protocol/v2.md`. The session tests
 (`tests/test_session.py`) need only bash (5.1 or later): they start a real bash on a PTY,
 with no VM and no sudo. The terminal-ownership tests (`tests/test_session_terminal.py`,
 spec §6) do the same with an `os.openpty()` pair as the user's terminal: they type on it

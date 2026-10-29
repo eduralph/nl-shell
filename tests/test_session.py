@@ -652,11 +652,32 @@ def test_hook_state_vars_cover_the_rcfile():
     assert {"__nls_seq", "__nls_st", "__nls_v", "__nls_c"} <= variables  # the parser works
     stray = {name for name in variables if not name.startswith("__nls_")} - bash_owned
     assert stray == {"LC_ALL"}, stray
-    # LC_ALL is set once, in __nls_enc's subshell, so the shell's own value never changes.
-    enc = re.search(r"^__nls_enc\(\) \{\n  \(\n(.*?)\n  \)\n\}$", rcfile, re.M | re.S)
-    assert enc is not None and "LC_ALL=C" in enc.group(1)
+    # LC_ALL is set once, as a function-local `declare` inside __nls_enc, so the shell's
+    # own value never changes; and __nls_enc writes from the main shell, never from a
+    # subshell (ADR-0028: only the main shell's records are accepted).
+    enc = re.search(r"^__nls_enc\(\) \{\n(.*?)\n\}$", rcfile, re.M | re.S)
+    assert enc is not None and "\\builtin declare LC_ALL=C" in enc.group(1)
+    assert "(" not in enc.group(1).replace("()", "")
     assert rcfile.count("LC_ALL") == 1
     assert not re.search(r"\blocal\b", rcfile)
+
+
+def test_every_record_but_s_is_written_by_the_main_shell():
+    """The hooks write D, the snapshot records and E with builtins in the main shell;
+    only PS0 (S) expands in a subshell. A `>&3` inside `( … )` or `$( … )` would be a
+    foreign write (ADR-0028)."""
+    rcfile = _session_module().RCFILE
+    hooks = rcfile[rcfile.index("__nls_ret() {") :]
+    depth = 0
+    for line in hooks.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("PS0="):
+            continue
+        if ">&3" in stripped:
+            assert depth == 0, line
+        # `$(` / `(` open a subshell for the hooks' purposes; `{` does not.
+        depth += stripped.count("$(") + stripped.count("( ") - stripped.count(")")
+        depth = max(depth, 0)
 
 
 def _ends_degraded_or_ran(session, marker):
@@ -904,10 +925,79 @@ def test_histfile_is_unset(start_session):
     assert not os.path.exists(os.path.join(os.environ["HOME"], ".bash_history"))
 
 
-def test_fd3_is_a_pipe(start_session):
+def test_fd3_is_a_socket(start_session):
     session, _ = start_session()
-    result = _run(session, "[ -p /dev/fd/3 ]")
+    result = _run(session, "[ -S /dev/fd/3 ]")
     assert (result.ran, result.status) == (True, 0)
+
+
+# ---- the control channel attests its writer (ADR-0028, spec §2.3) --
+
+
+def test_a_foreign_process_writing_a_record_degrades_by_name(start_session):
+    session_mod = _session_module()
+    session, _ = start_session()
+    with pytest.raises(session_mod.SessionDegraded) as info:
+        _run(session, "sleep 0.1; ( printf 'D 1 0 0\\n' >&3 ); sleep 0.1")
+    assert session.degraded
+    assert "foreign process wrote to the control channel" in session.degraded_reason
+    assert "pid " in session.degraded_reason
+    assert info.value.code == "foreign-writer"
+
+
+def test_a_foreign_process_writing_a_snapshot_degrades(start_session):
+    session_mod = _session_module()
+    session, _ = start_session()
+    forged = "D 1 0 0\\nF \\nL \\nT \\nB \\nX \\nP \\nJ 0\\nH x\\nV \\nE\\n"
+    with pytest.raises(session_mod.SessionDegraded):
+        _run(session, f"/usr/bin/printf '{forged}' >&3; sleep 0.1")
+    assert "foreign process" in session.degraded_reason
+    assert "pid " in session.degraded_reason  # its comm only while it is still readable
+
+
+def test_a_foreign_s_record_is_advisory(start_session):
+    # PS0 expands in a subshell, so S arrives with a child pid; a child's S with the
+    # right number is a repeat of the real one and changes nothing.
+    session, _ = start_session()
+    result = _run(session, "( printf 'S %s\\n' \"$((__nls_seq + 1))\" >&3 ); echo ok")
+    assert (result.ran, result.status, result.text) == (True, 0, "ok\n")
+    assert not session.degraded
+
+
+def test_a_foreign_s_record_with_another_number_degrades(start_session):
+    session_mod = _session_module()
+    session, _ = start_session()
+    with pytest.raises(session_mod.SessionDegraded):
+        _run(session, "( printf 'S 99\\n' >&3 ); sleep 0.1")
+    assert session.degraded
+    assert "foreign" not in session.degraded_reason  # advisory: the sequence rule fired
+
+
+def test_the_main_shells_own_forgery_is_not_the_channels_problem(start_session):
+    # Same pid as the hooks: the channel cannot tell them apart (ADR-0028). The gate's
+    # text scan rejects `>&3` before it is ever sent; here, sent anyway, the sequence
+    # rule still degrades, because the real D follows the forged one.
+    session_mod = _session_module()
+    session, _ = start_session()
+    with pytest.raises(session_mod.SessionDegraded):
+        _run(session, "printf 'D 1 0 0\\n' >&3")
+    assert session.degraded
+    assert "foreign" not in session.degraded_reason
+
+
+def test_exec_into_another_program_is_seen_by_the_identity_check(start_session):
+    session_mod = _session_module()
+    session, _ = start_session()
+    # `exec sleep` keeps the pid and fd 3. No record follows, so the run times out and
+    # degrades; the identity check, which runs at E and before a paste, would name the
+    # replacement had a forged E arrived.
+    with pytest.raises((session_mod.SessionDegraded, session_mod.SessionTimeout)):
+        _run(session, "exec sleep 30", timeout=2.0)
+    assert session.degraded
+    assert session._identity is not None
+    now = session._read_identity()
+    assert now is not None and now[0] == session._identity[0]  # same process
+    assert now[1] != session._identity[1] and now[1].endswith("sleep")
 
 
 def test_record_with_carriage_return_is_malformed():
@@ -963,7 +1053,7 @@ def test_done_without_start_is_nothing_ran_and_h_tracks_the_counter():
 def test_spec_reference_rcfile_is_the_one_in_use():
     session_mod = _session_module()
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    spec = os.path.join(root, "docs", "design", "specs", "pty-protocol", "v1.md")
+    spec = os.path.join(root, "docs", "design", "specs", "pty-protocol", "v2.md")
     with open(spec, encoding="utf-8") as fh:
         text = fh.read()
     section = text[text.index("3. Reference rcfile") :]

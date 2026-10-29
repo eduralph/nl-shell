@@ -11,7 +11,7 @@ Normative, versioned contracts (see `../README.md`).
 | Spec | Version | Status | Decision |
 |---|---|---|---|
 | [Policy gate](policy-gate/v2.md) | v2 | draft | ADR-0027 (v1: ADR-0013, superseded) |
-| [PTY session protocol](pty-protocol/v1.md) | v1 | draft | ADR-0014 |
+| [PTY session protocol](pty-protocol/v2.md) | v2 | draft | ADR-0014, ADR-0028 (v1 superseded) |
 | [Command proposal](proposal/v1.md) | v1 | draft | ADR-0018 |
 | [Quarantined reader output](reader-schema/v1.md) | v1 | draft | ADR-0017, ADR-0018 |
 | [Session log](session-log/v1.md) | v1 | draft | ADR-0014, ADR-0016, ADR-0020 |

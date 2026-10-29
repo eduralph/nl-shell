@@ -878,7 +878,10 @@ def test_after_an_exception_mid_command_the_held_control_records_are_bounded(
     session = start_session(on_record=on_record)
     armed[0] = True
     with pytest.raises(_Boom):
-        session.run("sleep 0.2; head -c 4194304 /dev/zero >&3", timeout=RUN_TIMEOUT)
+        # The flood must come from bash itself: a child's bytes are a foreign record and
+        # end the reading at once (the next test).
+        session.run("sleep 0.2; for i in {1..1024}; do printf '%01024d\\n' 0 >&3; done",
+                    timeout=RUN_TIMEOUT)
     armed[0] = False
     background = session._background
     _wait_for(lambda: background._control_overflow, 10.0, "the held records never overflowed")
@@ -886,6 +889,28 @@ def test_after_an_exception_mid_command_the_held_control_records_are_bounded(
     with pytest.raises(session_mod.SessionDegraded, match="control channel sent over"):
         session.run("echo after", timeout=RUN_TIMEOUT)
     assert session.degraded
+
+
+def test_after_an_exception_mid_command_a_foreign_writer_is_held_and_named(
+        start_session, monkeypatch):
+    session_mod = _session_module()
+    armed = [False]
+
+    def on_record(line: bytes) -> None:
+        if armed[0] and line.startswith(b"S "):
+            raise _Boom("raised while the command runs")
+
+    session = start_session(on_record=on_record)
+    armed[0] = True
+    with pytest.raises(_Boom):
+        session.run("sleep 0.2; head -c 4194304 /dev/zero >&3", timeout=RUN_TIMEOUT)
+    armed[0] = False
+    background = session._background
+    _wait_for(lambda: any(isinstance(d, session_mod._Foreign) for d in background._control),
+              10.0, "the foreign record was never held")
+    with pytest.raises(session_mod.SessionDegraded, match="foreign process"):
+        session.run("echo after", timeout=RUN_TIMEOUT)
+    assert session.degraded_code == "foreign-writer"
 
 
 def test_held_control_records_find_e_across_reads():

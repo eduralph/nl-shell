@@ -1,4 +1,4 @@
-"""pty-protocol v1 (``docs/design/specs/pty-protocol/v1.md``): records (§2), the snapshot
+"""pty-protocol v1 (``docs/design/specs/pty-protocol/v2.md``): records (§2), the snapshot
 (§3), sequencing and degraded mode (§4) and which commands may be sent (§5).
 
 Pure logic with no I/O: ``session.py`` feeds it the bytes read from the control channel

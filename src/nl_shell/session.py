@@ -1,8 +1,12 @@
-"""The persistent bash session: one interactive bash on a PTY, driven by pty-protocol v1.
+"""The persistent bash session: one interactive bash on a PTY, driven by pty-protocol v2.
 
 ``Session.start()`` runs ``bash --noprofile --rcfile <rcfile> -i`` on a PTY (ptyprocess,
-ADR-0021 §2) with a pipe as fd 3, the control channel (spec
-``docs/design/specs/pty-protocol/v1.md`` §1, ADR-0014). ``Session.run()`` pastes one
+ADR-0021 §2) with one end of an AF_UNIX socket pair as fd 3, the control channel (spec
+``docs/design/specs/pty-protocol/v2.md`` §1, ADR-0014, ADR-0028). nl-shell's end has
+``SO_PASSCRED`` set, so the kernel attests the pid that wrote each record: ``D``, the
+snapshot records and ``E`` must come from the session's bash itself; a record from any
+other process degrades the session, naming it (``S`` is advisory and may come from the
+``PS0`` subshell). ``Session.run()`` pastes one
 confirmed command (§5) and returns its status, ``PIPESTATUS``, output and snapshot. Status
 and completion come only from control-channel records, never from text on the PTY.
 
@@ -27,6 +31,7 @@ import re
 import secrets
 import select
 import shutil
+import socket
 import stat
 import struct
 import tempfile
@@ -134,12 +139,14 @@ _V_VARS = (
 # - only builtins and parameter expansion (no `PATH` lookup). Each `$( … )` is parsed
 #   again when it runs, so `__nls_snap` turns `expand_aliases` off first (back on after E
 #   if it was on) and PS0/PROMPT_COMMAND quote their command words (`\builtin`).
-# - `__nls_enc` escapes in a subshell with `LC_ALL=C`: H's key bindings list raw bytes
-#   0xa0-0xff, and in a UTF-8 locale bash 5.1 then takes ~0.15 s to replace H's newlines,
-#   at every prompt. The patterns are ASCII, which never occurs inside a UTF-8 multibyte
-#   character, so the bytes are the same. The subshell keeps LC_ALL out of the shell's own
-#   state; `declare` (not an assignment, which would end the subshell) only fails if
-#   ~/.bashrc made LC_ALL readonly, and the escaping is then just slower.
+# - `__nls_enc` escapes with a function-local `LC_ALL=C` (`\builtin declare` inside the
+#   function scopes it to the call, so the shell's own locale is untouched): H's key
+#   bindings list raw bytes 0xa0-0xff, and in a UTF-8 locale bash 5.1 then takes ~0.15 s
+#   to replace H's newlines, at every prompt. The patterns are ASCII, which never occurs
+#   inside a UTF-8 multibyte character, so the bytes are the same. `declare` only fails
+#   if ~/.bashrc made LC_ALL readonly, and the escaping is then just slower. It runs in
+#   the main shell, never a subshell: the control channel attests the writer's pid
+#   (ADR-0028), and only the main shell's records are accepted.
 # - H also holds the bash state that can make bash run code, or change how readline reads
 #   the pasted bytes, after the snapshot: every trap but EXIT (read at the top level of
 #   nl-shell's PROMPT_COMMAND element, because bash hides DEBUG/RETURN/ERR inside an
@@ -189,14 +196,12 @@ __nls_seq=-1 __nls_st=0 __nls_ps=() __nls_v= __nls_c= __nls_n=0 __nls_pre=
 PS0='$(\\builtin printf "S %s\\n" "$((__nls_seq + 1))" >&3)'
 __nls_ret() { \builtin return "$1"; }
 __nls_enc() {
-  (
-    \builtin declare LC_ALL=C 2>/dev/null || \builtin :
-    __nls_v=$2
-    __nls_v=${__nls_v//'\'/'\\'}
-    __nls_v=${__nls_v//$'\n'/'\n'}
-    __nls_v=${__nls_v//$'\r'/'\r'}
-    \builtin printf '%s %s\n' "$1" "$__nls_v" >&3
-  )
+  \builtin declare LC_ALL=C 2>/dev/null || \builtin :
+  __nls_v=$2
+  __nls_v=${__nls_v//'\'/'\\'}
+  __nls_v=${__nls_v//$'\n'/'\n'}
+  __nls_v=${__nls_v//$'\r'/'\r'}
+  \builtin printf '%s %s\n' "$1" "$__nls_v" >&3
 }
 __nls_done() {
   \builtin set -- "$?" "${PIPESTATUS[@]}" || return
@@ -548,19 +553,23 @@ class _Background:
         self._dropped = 0
         # Control records the reader read up to the command's E (_background_loop), for
         # the next run to feed to the tracker; None in place of bytes marks EOF.
-        self._control: list[bytes | None] = []
+        self._control: list[bytes | _Foreign | None] = []
         self._control_size = 0
         self._control_tail = b"\n"  # the last two bytes held (a record ends in "\n")
         self._control_overflow = False
 
-    def hold_control(self, data: bytes) -> bool:
-        """Keep ``data`` read from the control channel (``b""`` is EOF). True once the
-        ``E`` record is among the bytes held, the channel closed, or more than
-        ``CONTROL_HOLD_LIMIT`` bytes came without an ``E``: then nothing is kept and the
-        next ``take_control`` reports the overflow."""
+    def hold_control(self, data: "bytes | _Foreign | None") -> bool:
+        """Keep ``data`` read from the control channel (``None`` is EOF, a ``_Foreign``
+        a record from another process). True once the ``E`` record is among the bytes
+        held, the channel closed, a foreign record came (the next run degrades on it), or
+        more than ``CONTROL_HOLD_LIMIT`` bytes came without an ``E``: then nothing is
+        kept and the next ``take_control`` reports the overflow."""
         with self._lock:
-            if not data:
+            if data is None:
                 self._control.append(None)
+                return True
+            if isinstance(data, _Foreign):
+                self._control.append(data)
                 return True
             if self._control_size + len(data) > CONTROL_HOLD_LIMIT:
                 self._control, self._control_size = [], 0
@@ -572,7 +581,7 @@ class _Background:
             self._control_tail = window[-2:]
         return b"\nE\n" in window
 
-    def take_control(self) -> tuple[list[bytes | None], bool]:
+    def take_control(self) -> tuple["list[bytes | _Foreign | None]", bool]:
         """The control reads held since the last call, in order (``None`` is EOF), and
         whether the reader gave up on an overflow."""
         with self._lock:
@@ -646,8 +655,10 @@ class Session:
         self._dimensions = dimensions
         self._on_record = on_record
         self._proc: ptyprocess.PtyProcess | None = None
-        self._ctl: int | None = None
+        self._ctl: int | None = None  # nl-shell's end of the control socket pair
+        self._ctl_sock: socket.socket | None = None
         self._ctl_open = False
+        self._identity: tuple[str, str] | None = None  # bash's start time and exe
         self._rcdir: str | None = None
         self._tracker = ProtocolTracker(on_record)
         self._end = b""  # this start's end-of-output marker (_end_marker)
@@ -698,10 +709,11 @@ class Session:
                 proc.close(force=True)
             except Exception:
                 pass
-        if self._ctl is not None:
-            os.close(self._ctl)
-            self._ctl = None
+        if self._ctl_sock is not None:
+            self._ctl_sock.close()
+            self._ctl_sock = self._ctl = None
         self._ctl_open = False
+        self._identity = None
         self._prompt_termios = self._fds = None
         self._remove_rcfile()
 
@@ -718,12 +730,18 @@ class Session:
         self._end = _end_marker(token)
         with open(rcfile, "w", encoding="utf-8") as fh:
             fh.write(RCFILE.replace(_END_TOKEN, token))
-        ctl_read, ctl_write = os.pipe()
+        # The control channel (§1.1): an AF_UNIX stream socket pair. SO_PASSCRED on
+        # nl-shell's end makes the kernel attach the writing process's credentials to
+        # every write, which is how a record is known to come from bash itself
+        # (ADR-0028). Set before bash starts, so the first record is attested too.
+        ctl_read, ctl_write = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        ctl_read.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        write_fd = ctl_write.fileno()
 
         def wire_fd3() -> None:  # runs in the child, after fork
-            high = fcntl.fcntl(ctl_write, fcntl.F_DUPFD, 10)
+            high = fcntl.fcntl(write_fd, fcntl.F_DUPFD, 10)
             os.dup2(high, 3)  # a dup2 copy is inheritable
-            for fd in {high, ctl_write} - {3}:
+            for fd in {high, write_fd} - {3}:
                 os.close(fd)
 
         try:
@@ -732,15 +750,15 @@ class Session:
                 cwd=self._cwd,
                 env=self._env,
                 dimensions=self._dimensions,
-                pass_fds=(ctl_write,),
+                pass_fds=(write_fd,),
                 preexec_fn=wire_fd3,
             )
         except BaseException:
-            os.close(ctl_read)
+            ctl_read.close()
             raise
         finally:
-            os.close(ctl_write)  # only bash (and what it starts) holds the write end
-        self._ctl, self._ctl_open = ctl_read, True
+            ctl_write.close()  # only bash (and what it starts) holds the write end
+        self._ctl_sock, self._ctl, self._ctl_open = ctl_read, ctl_read.fileno(), True
         self._tty_rdev = _pty_slave_rdev(self._proc.fd)
 
         deadline = time.monotonic() + timeout
@@ -759,6 +777,7 @@ class Session:
         # Fail closed at start if the prompt rule cannot be applied (§4.2 third trigger).
         if self._wait_for_prompt() and not self._check_stopped():
             self._prompt_baseline()
+            self._identity = self._read_identity()
         self._check_tiocsti()
         self._start_background()
 
@@ -881,7 +900,7 @@ class Session:
         ctl = None
         if self._ctl_open and self._tracker.phase in (Phase.SENT, Phase.RUNNING,
                                                       Phase.SNAPSHOT):
-            ctl = self._ctl
+            ctl = (self._ctl_sock, self._proc.pid)
         wake_r, wake_w = os.pipe()
         # The thread holds the session only weakly (_background_loop), so a session
         # dropped without close() is still collected and its PtyProcess ends bash. The
@@ -1010,6 +1029,8 @@ class Session:
                     finished = value  # type: ignore[assignment]
                     # Before the output: with fd 1 redirected the end marker never
                     # reaches the terminal.
+                    if not self._tracker.degraded:
+                        self._check_identity()
                     if not self._tracker.degraded:
                         self._check_fds_after_e()
                     if self._tracker.started and not self._tracker.degraded:
@@ -1271,7 +1292,9 @@ class Session:
                 "outside-check",
             )
         else:
-            self._check_fds()
+            self._check_identity()
+            if not self._tracker.degraded:
+                self._check_fds()
 
     def _check_fds(self) -> None:
         """bash's fds 0-2 must be what they were at the first prompt."""
@@ -1445,6 +1468,8 @@ class Session:
             if data is None:
                 self._ctl_open = False
                 self._tracker.eof()
+            elif isinstance(data, _Foreign):
+                self._foreign(data)
             else:
                 self._tracker.feed(data)
 
@@ -1454,13 +1479,110 @@ class Session:
             self._read_control()
 
     def _read_control(self) -> list[tuple[str, object]]:
-        assert self._ctl is not None
-        data = os.read(self._ctl, 65536)
-        if not data:
+        assert self._ctl_sock is not None and self._proc is not None
+        data = _recv_control(self._ctl_sock, self._proc.pid)
+        if data is None:
             self._ctl_open = False
             self._tracker.eof()
             return []
+        if isinstance(data, _Foreign):
+            self._foreign(data)
+            return []
         return self._tracker.feed(data)
+
+    def _foreign(self, record: "_Foreign") -> None:
+        """A record from a process other than the session's bash (§2.3): the session
+        degrades, naming the writer."""
+        comm = _proc_comm(self.proc_root, record.pid)
+        self._tracker.degrade(
+            f"a foreign process wrote to the control channel (pid {record.pid}"
+            + (f", {comm}" if comm else "")
+            + f"): {record.data[:60]!r}",
+            "foreign-writer",
+        )
+
+    # ----- process identity (§3, outside checks) --
+
+    def _read_identity(self) -> tuple[str, str] | None:
+        """bash's start time (``/proc/<pid>/stat`` field 22) and ``/proc/<pid>/exe``, or
+        None (degraded) if they cannot be read. A pid alone is not identity: ``exec``
+        keeps it, and a pid is reused after exit."""
+        assert self._proc is not None
+        base = os.path.join(self.proc_root, str(self._proc.pid))
+        try:
+            with open(os.path.join(base, "stat"), encoding="ascii", errors="replace") as fh:
+                text = fh.read()
+            after = text[text.rindex(")") + 2 :].split()
+            start_time = after[19]  # field 22, counting pid and comm as 1 and 2
+            exe = os.readlink(os.path.join(base, "exe"))
+        except (OSError, ValueError, IndexError) as exc:
+            self._tracker.degrade(
+                f"cannot read {base}/stat or {base}/exe ({exc.__class__.__name__}), so"
+                " the shell's identity cannot be checked",
+                "outside-check",
+            )
+            return None
+        return start_time, exe
+
+    def _check_identity(self) -> None:
+        """The process on bash's pid must still be the bash nl-shell started."""
+        if self._identity is None:
+            return
+        now = self._read_identity()
+        if now is None or now == self._identity:
+            return
+        if now[0] != self._identity[0]:
+            self._tracker.degrade(
+                "the session's pid now belongs to another process (its start time"
+                " changed)",
+                "outside-check",
+            )
+        else:
+            self._tracker.degrade(
+                f"the session's process is no longer the bash nl-shell started (exe is"
+                f" now {now[1]})",
+                "outside-check",
+            )
+
+
+@dataclasses.dataclass(frozen=True)
+class _Foreign:
+    """Bytes a process other than the session's bash wrote to the control channel."""
+
+    pid: int
+    data: bytes
+
+
+_SCM_CREDS = struct.Struct("3i")
+_S_ONLY = re.compile(rb"(?:S [0-9]+\n)+")
+
+
+def _recv_control(sock: socket.socket, bash_pid: int) -> "bytes | _Foreign | None":
+    """One read from the control channel with the kernel's word on who wrote it
+    (``SO_PASSCRED``). None at EOF. Bytes written by bash itself are returned; so are
+    bytes from another process that are nothing but ``S`` records (``PS0`` expands in a
+    subshell, and ``S`` is advisory, spec §2.3); anything else from another process is a
+    ``_Foreign``. The kernel never merges two writers' bytes into one read."""
+    data, ancillary, _, _ = sock.recvmsg(65536, socket.CMSG_SPACE(_SCM_CREDS.size))
+    if not data:
+        return None
+    pid = None
+    for level, kind, payload in ancillary:
+        if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+            pid = _SCM_CREDS.unpack(payload[: _SCM_CREDS.size])[0]
+    if pid == bash_pid or _S_ONLY.fullmatch(data):
+        return data
+    return _Foreign(pid if pid is not None else -1, data)
+
+
+def _proc_comm(proc_root: str, pid: int) -> str:
+    """``/proc/<pid>/comm`` while it is still readable, else ``""``."""
+    try:
+        with open(os.path.join(proc_root, str(pid), "comm"), encoding="utf-8",
+                  errors="replace") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 def _pty_slave_rdev(master_fd: int) -> int | None:
@@ -1579,11 +1701,11 @@ def _background_loop(
         if ctl is None:
             ready = _select([fd, wake], None if background.armed else _PROMPT_POLL)
         else:
-            ready = _select([fd, wake, ctl], None)
+            ready = _select([fd, wake, ctl[0].fileno()], None)
         if wake in ready:
             return
-        if ctl is not None and ctl in ready:
-            if background.hold_control(os.read(ctl, 65536)):
+        if ctl is not None and ctl[0].fileno() in ready:
+            if background.hold_control(_recv_control(*ctl)):
                 ctl = None  # E is in (or the channel closed): the drain is over
         if fd not in ready:
             continue

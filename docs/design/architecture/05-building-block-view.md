@@ -50,7 +50,7 @@ graph TB
 | Model backend | Builds the prompt from the editable YAML prompts; calls the command model; parses the proposal | No (its output is untrusted) |
 | Policy gate | Classes every command: read-only only inside a closed grammar, by the allowlist and the live session snapshot; rejections by a text scan (spec `policy-gate/v2`) | **Yes, the most critical** |
 | Confirm UI | Shows the command exactly as bash will parse it; strips escape sequences | Yes |
-| PTY session | One persistent bash with a control channel on fd 3 for start/done records and session snapshots (spec `pty-protocol/v1`); input forwarding; sudo passthrough | Yes (password, completion) |
+| PTY session | One persistent bash with a control channel on fd 3 (an AF_UNIX socket that attests the writing process) for start/done records and session snapshots (spec `pty-protocol/v2`); input forwarding; sudo passthrough | Yes (password, completion) |
 | Quarantined reader | Reads raw untrusted text as a separate model request; returns only fixed choices and validated names (ADR-0017) | Yes |
 | Session log, history | JSONL per turn; appends executed commands to `~/.bash_history`; silent during passthrough | Yes (secrets) |
 | Installer | GPU detection, weight download and verification, install-time doc harvest | Yes (integrity) |
