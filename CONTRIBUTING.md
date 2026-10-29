@@ -20,8 +20,9 @@ This appends a `Signed-off-by: Your Name <you@example.com>` trailer (using your
 
 ## Engineering discipline
 
-- Every change starts from an issue on the open milestone; the PR closes it
-  (`Closes #NNN` in the PR body — the `require-linked-issue` check enforces it).
+- Every change starts from an issue on the open milestone; the PR body links it
+  (`Closes #NNN`, or `Refs #NNN` for partial work — the `require-linked-issue` check
+  enforces it).
 - One logical change per commit / PR; split unrelated changes.
 - A change ships with the means to verify it — a test, or a stated reason why a test
   is impractical plus a manual repro.
